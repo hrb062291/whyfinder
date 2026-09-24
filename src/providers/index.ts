@@ -14,6 +14,49 @@
 
 import type { ModelProvider } from '../types/index.js';
 
+/**
+ * Try `primary`; on any failure fall back to `backup`.
+ *
+ * The demo must never die in front of a judge because of a rate limit. The
+ * danger with a silent fallback is not noticing you are running degraded, so
+ * every fallback is recorded and the mode is readable afterwards.
+ *
+ * This wrapper does NOT weaken any constraint: whatever comes back, from
+ * either provider, goes through the same filter.
+ */
+export interface FallbackRecord {
+  at: string;
+  provider: string;
+  error: string;
+}
+
+export function withFallback(
+  primary: ModelProvider,
+  backup: ModelProvider,
+  onFallback?: (r: FallbackRecord) => void,
+): ModelProvider & { lastMode: () => 'primary' | 'fallback' | 'unused' } {
+  let mode: 'primary' | 'fallback' | 'unused' = 'unused';
+  return {
+    name: primary.name,
+    lastMode: () => mode,
+    async complete(messages, system) {
+      try {
+        const out = await primary.complete(messages, system);
+        mode = 'primary';
+        return out;
+      } catch (e) {
+        mode = 'fallback';
+        onFallback?.({
+          at: new Date().toISOString(),
+          provider: primary.name,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return backup.complete(messages, system);
+      }
+    },
+  };
+}
+
 /** Recorded generations. The demo's default, and the test default. */
 export function fixtureProvider(responses: string[]): ModelProvider {
   let i = 0;

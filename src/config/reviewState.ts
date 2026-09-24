@@ -118,6 +118,18 @@ export const DEFERRED_GATES: DeferredGate[] = [
     resolved: false,
   },
   {
+    id: 'c01-age-assurance',
+    constraint: 'C-01',
+    deferred:
+      'KNOWING EXCEPTION, not an oversight. No age-assurance step and no account creation ' +
+      'exist in DEMO. Ray decided on 2026-09-24 to skip it for the hackathon build. The app ' +
+      'therefore does not satisfy C-01, and the only thing standing in for it is that the ' +
+      'audience is people Ray can name.',
+    approver: 'ray',
+    unblockedBy: 'Build the DOB screen + 18+ attestation issuing a token the account endpoint requires.',
+    resolved: false,
+  },
+  {
     id: 'c21-gloo-terms',
     constraint: 'C-21',
     deferred: 'No written confirmation that Gloo does not train on user content. Gloo adapter unused.',
