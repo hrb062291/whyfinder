@@ -74,7 +74,7 @@ export function fixtureProvider(responses: string[]): ModelProvider {
  * Model id is configurable. Hard-coding one means a deprecated or misspelled id
  * takes the app down and can only be fixed by a deploy.
  */
-export const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5';
+export const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
 
 /**
  * Fail fast rather than hang.

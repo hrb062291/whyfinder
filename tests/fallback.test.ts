@@ -94,3 +94,12 @@ describe('the model call cannot hang the function', () => {
     expect(DEFAULT_MODEL.length).toBeGreaterThan(0);
   });
 });
+
+describe('the default model id', () => {
+  it('is not the one that was wrong', async () => {
+    const { DEFAULT_MODEL } = await import('../src/providers/index.js');
+    // claude-sonnet-4-5 does not exist. It was written from memory rather than
+    // checked, every call 404'd, and the fallback made that look like success.
+    expect(DEFAULT_MODEL).not.toBe('claude-sonnet-4-5');
+  });
+});
