@@ -26,6 +26,13 @@ import type { Entry } from '../../../src/types/index.js';
 export const runtime = 'nodejs';
 
 /**
+ * The model call needs room. The platform default is short enough that a slow
+ * upstream response kills the function, and a killed function returns an empty
+ * 500 — no error body, no fallback, nothing to debug from.
+ */
+export const maxDuration = 60;
+
+/**
  * The constraint prompt.
  *
  * This is the FIRST line of defence and never the only one. Every rule below is
@@ -136,11 +143,30 @@ export async function POST(req: Request) {
   const backup = fixtureFor(willBe);
   const live = key ? withFallback(anthropicProvider(key), backup, recordFallback) : null;
 
-  const r = await takeTurn(state, body.text ?? '', {
-    provider: live ?? backup,
-    systemPrompt: systemPrompt(willBe),
-    thirdPartyNames: [],
-  });
-
-  return NextResponse.json({ ...r, mode: live ? live.lastMode() : 'fixtures' });
+  /**
+   * Last-resort guard. withFallback covers a failing model call, but anything
+   * that throws OUTSIDE it — a parse error, a bad state payload — would
+   * otherwise surface as an empty 500 that tells nobody anything. The
+   * conversation continues either way; a turn never dies silently.
+   */
+  try {
+    const r = await takeTurn(state, body.text ?? '', {
+      provider: live ?? backup,
+      systemPrompt: systemPrompt(willBe),
+      thirdPartyNames: [],
+    });
+    return NextResponse.json({ ...r, mode: live ? live.lastMode() : 'fixtures' });
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error('[whyfinder] turn failed:', detail);
+    return NextResponse.json(
+      {
+        state,
+        output: { kind: 'question', text: 'Say a bit more about that.', questionId: 'recovery' },
+        mode: 'error',
+        detail: detail.slice(0, 300),
+      },
+      { status: 200 },
+    );
+  }
 }

@@ -70,22 +70,53 @@ export function fixtureProvider(responses: string[]): ModelProvider {
   };
 }
 
-export function anthropicProvider(apiKey: string, model = 'claude-sonnet-4-5'): ModelProvider {
+/**
+ * Model id is configurable. Hard-coding one means a deprecated or misspelled id
+ * takes the app down and can only be fixed by a deploy.
+ */
+export const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5';
+
+/**
+ * Fail fast rather than hang.
+ *
+ * A serverless function that waits on a slow upstream call gets killed by the
+ * platform, and a killed function returns an empty 500 — the fallback never
+ * runs, because nothing is left alive to run it. Timing out here means the
+ * request fails inside our own code, where withFallback can catch it.
+ */
+export const REQUEST_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS ?? 20_000);
+
+export function anthropicProvider(apiKey: string, model = DEFAULT_MODEL): ModelProvider {
   return {
     name: 'anthropic',
     async complete(messages, system) {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({ model, max_tokens: 1024, system, messages }),
-      });
-      if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
-      const json = (await res.json()) as { content: { type: string; text?: string }[] };
-      return json.content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          signal: ac.signal,
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({ model, max_tokens: 1024, system, messages }),
+        });
+        if (!res.ok) {
+          // Body may name the model or the rate limit. It never contains the key.
+          throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+        }
+        const json = (await res.json()) as { content: { type: string; text?: string }[] };
+        return json.content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+      } catch (e) {
+        if (e instanceof Error && e.name === 'AbortError') {
+          throw new Error(`Anthropic timed out after ${REQUEST_TIMEOUT_MS}ms`);
+        }
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }
