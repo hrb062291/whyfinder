@@ -31,6 +31,21 @@ export interface Question {
   retireOnAnswer: boolean;
   /** C-26: constraint disclosures are asked once and never re-asked. */
   askOnce?: boolean;
+  /**
+   * Served only after its parent has a substantive answer, and served next
+   * when it does. A follow-up with no answered parent is never eligible.
+   */
+  followsFrom?: string;
+  /**
+   * Asked as soon as its tier opens, ahead of breadth. For the few questions
+   * that are the point rather than part of the sweep.
+   */
+  priority?: boolean;
+  /**
+   * Rendered under the question, quieter. Holds the affordance rather than the
+   * question — a defer option buried in the question text reads as a wall.
+   */
+  note?: string;
 }
 
 export const QUESTIONS: Question[] = [
@@ -89,6 +104,10 @@ export const QUESTIONS: Question[] = [
     text: 'What comes easily to you that other people seem to find harder?' },
   { id: 'cc4', tier: 'light', category: 'craft', retireOnAnswer: false,
     text: 'What do you fix, tidy or improve without being asked?' },
+  { id: 'cc5', tier: 'light', category: 'craft', retireOnAnswer: false,
+    text: 'What would you say you are good at? No need to be modest about it.' },
+  { id: 'cc6', tier: 'light', category: 'craft', retireOnAnswer: false,
+    text: 'What do you know you are not good at?' },
 
   // --- delight: what you do when nobody is paying you
   { id: 'de1', tier: 'light', category: 'delight', retireOnAnswer: false,
@@ -128,26 +147,30 @@ export const QUESTIONS: Question[] = [
   { id: 'fd1', tier: 'medium', category: 'faith_distance', retireOnAnswer: false,
     text: 'Has there been a stretch where God felt far off? What was going on then?' },
   { id: 'fd2', tier: 'medium', category: 'faith_distance', retireOnAnswer: false,
-    text: 'What have you prayed for that you did not get?' },
+    text: 'Which of your prayers have gone unanswered?' },
   { id: 'fd3', tier: 'medium', category: 'faith_distance', retireOnAnswer: false,
-    text: 'Is there something you used to believe about God that you do not any more?' },
+    text: 'Is there something you used to believe about God that you do not any more? If so, why?' },
   { id: 'fd4', tier: 'medium', category: 'faith_distance', retireOnAnswer: false,
     text: 'Has your picture of God changed? What moved it?' },
+  { id: 'fd5', tier: 'medium', category: 'faith_distance', retireOnAnswer: false,
+    followsFrom: 'fd2',
+    text: 'This may be an unusual or hard question, but have you ever had a prayer answered in a way you did not expect? What was it?',
+    note: 'If you need some time to reflect on this, just say "Let\'s come back to this".' },
 
   // --- thresholds: what you quit, turned down, walked away from
   { id: 'th1', tier: 'medium', category: 'thresholds', retireOnAnswer: false,
-    text: 'Tell me about something you quit. What was the last straw?' },
+    text: 'Tell me about something you quit. What was the last straw — tell me why, and what happened?' },
   { id: 'th2', tier: 'medium', category: 'thresholds', retireOnAnswer: false,
     text: 'What have you turned down that you still think about?' },
   { id: 'th3', tier: 'medium', category: 'thresholds', retireOnAnswer: false,
     text: 'When did you last walk away from something that looked good on paper?' },
-  { id: 'th4', tier: 'medium', category: 'thresholds', retireOnAnswer: false,
+  { id: 'th4', tier: 'medium', category: 'thresholds', retireOnAnswer: false, priority: true,
     text: 'What did you say no to that everyone around you expected you to say yes to?' },
   { id: 'th5', tier: 'medium', category: 'thresholds', retireOnAnswer: false,
     text: 'Is there something you have been on the edge of leaving for a while?' },
 
   // --- disappointment
-  { id: 'di1', tier: 'medium', category: 'disappointment', retireOnAnswer: false,
+  { id: 'di1', tier: 'medium', category: 'disappointment', retireOnAnswer: false, priority: true,
     text: 'What did you expect your life to look like by now?' },
   { id: 'di2', tier: 'medium', category: 'disappointment', retireOnAnswer: false,
     text: 'Tell me about something that did not go the way you thought it would.' },
@@ -160,7 +183,7 @@ export const QUESTIONS: Question[] = [
   { id: 'co1', tier: 'medium', category: 'constraint', retireOnAnswer: true, askOnce: true,
     text: 'What is actually available to you right now — time, money, energy? I would rather fit things to your real life than an imagined one.' },
   { id: 'co2', tier: 'medium', category: 'constraint', retireOnAnswer: true, askOnce: true,
-    text: 'Is there anything you are carrying at the moment that shapes what you can take on?' },
+    text: 'Is anyone depending on you right now — someone you care for, or a commitment you cannot step back from?' },
 ];
 
 /**

@@ -170,3 +170,39 @@ describe('selection', () => {
     expect(nextQuestion(s)).toBeNull();
   });
 });
+
+describe('follow-ups and priority in selection', () => {
+  const REAL2 = 'I prayed for two years about the move and nothing came of it.';
+
+  it('a follow-up is not offered before its parent is answered', () => {
+    let s = emptyState('u');
+    for (const id of ['dt1', 'wr1', 'en1']) s = answer(s, id);
+    expect(eligibleQuestions(s).some((q) => q.id === 'fd5')).toBe(false);
+  });
+
+  it('a follow-up is offered next once its parent is answered', () => {
+    let s = emptyState('u');
+    for (const id of ['dt1', 'wr1', 'en1']) s = answer(s, id);
+    s = answer(s, 'fd2', REAL2);
+    expect(nextQuestion(s)!.id).toBe('fd5');
+  });
+
+  it('a deflected parent does not unlock its follow-up', () => {
+    let s = emptyState('u');
+    for (const id of ['dt1', 'wr1', 'en1']) s = answer(s, id);
+    s = answer(s, 'fd2', 'skip');
+    expect(eligibleQuestions(s).some((q) => q.id === 'fd5')).toBe(false);
+  });
+
+  it('a priority question is reached once its tier opens', () => {
+    let s = emptyState('u');
+    for (const id of ['dt1', 'wr1', 'en1']) s = answer(s, id);
+    const q = nextQuestion(s)!;
+    expect(q.priority).toBe(true);
+  });
+
+  it('priority never jumps a tier gate', () => {
+    const s = emptyState('u');
+    expect(nextQuestion(s)!.tier).toBe('light');
+  });
+});

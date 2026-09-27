@@ -146,30 +146,54 @@ export function heavyAllowedNow(state: GateState, now: Date = new Date()): boole
 
 // ------------------------------------------------------------ selection
 
+function answeredSubstantively(state: GateState, questionId: string): boolean {
+  return state.substantiveAnswers.some((a) => a.questionId === questionId);
+}
+
 export function eligibleQuestions(state: GateState, now: Date = new Date()): Question[] {
   const all = [...QUESTIONS, ...HEAVY_QUESTIONS];
   return all.filter((q) => {
     if (state.retiredQuestionIds.includes(q.id)) return false;
-    if (state.substantiveAnswers.some((a) => a.questionId === q.id)) return false;
+    if (answeredSubstantively(state, q.id)) return false;
     if (inCooldown(state, q.id, now)) return false;
     if (!tierUnlocked(q.tier, state)) return false;
     if (q.tier === 'heavy' && !heavyAllowedNow(state, now)) return false;
+    // A follow-up is meaningless without its parent's answer, and asking it
+    // cold would read as the app losing the thread.
+    if (q.followsFrom && !answeredSubstantively(state, q.followsFrom)) return false;
     return true;
   });
 }
 
 /**
- * Prefers breadth: a category the user has not been asked about yet, so the
- * heavy gate's "3+ distinct categories" is reachable by a normal conversation
- * rather than by deliberate navigation.
+ * Selection order, most specific first:
+ *
+ *   1. A follow-up whose parent was just answered. Anything else here would
+ *      read as the app changing the subject mid-thought.
+ *   2. A priority question, once its tier is open. These are the questions
+ *      that are the point rather than part of the sweep, and leaving them to
+ *      chance in a bank of fifty means most people never see them.
+ *   3. A category not yet touched, so the heavy gate's "3+ distinct
+ *      categories" is reached by an ordinary conversation rather than by
+ *      deliberate navigation.
  */
 export function nextQuestion(state: GateState, now: Date = new Date()): Question | null {
   const eligible = eligibleQuestions(state, now);
   if (!eligible.length) return null;
+
+  const followUp = eligible.find((q) => q.followsFrom);
+  if (followUp) return followUp;
+
   const seen = distinctCategories(state);
-  const fresh = eligible.filter((q) => !seen.has(q.category));
-  const pool = fresh.length ? fresh : eligible;
-  return pool[0];
+  const preferFresh = (pool: Question[]) => {
+    const fresh = pool.filter((q) => !seen.has(q.category));
+    return (fresh.length ? fresh : pool)[0];
+  };
+
+  const priority = eligible.filter((q) => q.priority);
+  if (priority.length) return preferFresh(priority);
+
+  return preferFresh(eligible);
 }
 
 // ------------------------------------------------------------ transitions

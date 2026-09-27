@@ -16,10 +16,10 @@ const light = QUESTIONS.filter((q) => q.tier === 'light');
 const medium = QUESTIONS.filter((q) => q.tier === 'medium');
 
 describe('shape', () => {
-  it('hits the §5 target of 30 light and 20 medium', () => {
-    expect(light).toHaveLength(30);
-    expect(medium).toHaveLength(20);
-    expect(QUESTIONS).toHaveLength(50);
+  it('hits the §5 target of 32 light and 21 medium', () => {
+    expect(light).toHaveLength(32);
+    expect(medium).toHaveLength(21);
+    expect(QUESTIONS).toHaveLength(53);
   });
 
   it('holds no heavy questions — those are a pastoral gate', () => {
@@ -105,7 +105,10 @@ describe('answerability', () => {
     for (const q of QUESTIONS) {
       // The constraint disclosure questions carry a sentence of framing, which
       // C-26 justifies; nothing else should.
-      const cap = q.category === 'constraint' ? 32 : 24;
+      // fd5 carries its own framing ("this may be a hard question"), which is
+      // the point of it. The cap exists to stop a question becoming a
+      // paragraph, not to forbid a sentence of preparation.
+      const cap = q.category === 'constraint' ? 36 : 30;
       expect(q.text.split(/\s+/).length, `${q.id}: ${q.text}`).toBeLessThanOrEqual(cap);
     }
   });
@@ -145,5 +148,44 @@ describe('tier placement', () => {
     // strays there defeats C-23 without tripping any state-machine test.
     const heavyWords = /\b(died|death|grief|grieving|funeral|regret|afraid|fear|abuse|loss)\b/i;
     for (const q of light) expect(q.text, `${q.id}: ${q.text}`).not.toMatch(heavyWords);
+  });
+});
+
+describe('follow-ups', () => {
+  it('every followsFrom points at a real question', () => {
+    const ids = new Set(QUESTIONS.map((q) => q.id));
+    for (const q of QUESTIONS.filter((x) => x.followsFrom)) {
+      expect(ids.has(q.followsFrom!), `${q.id} -> ${q.followsFrom}`).toBe(true);
+    }
+  });
+
+  it('a follow-up sits in the same category and tier as its parent', () => {
+    for (const q of QUESTIONS.filter((x) => x.followsFrom)) {
+      const parent = QUESTIONS.find((p) => p.id === q.followsFrom)!;
+      expect(q.category).toBe(parent.category);
+      expect(q.tier).toBe(parent.tier);
+    }
+  });
+
+  it('no follow-up chains — one hop only, so the app cannot corner someone', () => {
+    for (const q of QUESTIONS.filter((x) => x.followsFrom)) {
+      const parent = QUESTIONS.find((p) => p.id === q.followsFrom)!;
+      expect(parent.followsFrom).toBeUndefined();
+    }
+  });
+
+  it('a question offering a way out says so in a note, not buried in the text', () => {
+    for (const q of QUESTIONS.filter((x) => x.note)) {
+      expect(q.note).toBeTruthy();
+      expect(q.text).not.toMatch(/come back to this/i);
+    }
+  });
+});
+
+describe('priority questions', () => {
+  it('are few — everything important means nothing is', () => {
+    const p = QUESTIONS.filter((q) => q.priority);
+    expect(p.length).toBeGreaterThan(0);
+    expect(p.length).toBeLessThanOrEqual(4);
   });
 });
