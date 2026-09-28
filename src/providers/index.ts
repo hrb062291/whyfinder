@@ -98,7 +98,23 @@ export const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';
  */
 export const REQUEST_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS ?? 20_000);
 
-export function anthropicProvider(apiKey: string, model = DEFAULT_MODEL): ModelProvider {
+/**
+ * Organization-scoped keys must name a workspace.
+ *
+ * A key created at the organization level is not bound to a workspace, so the
+ * API refuses the request unless it carries anthropic-workspace-id. A key
+ * created inside a workspace carries that binding itself and needs nothing.
+ *
+ * Unset is the correct value for a workspace-scoped key — the header is simply
+ * omitted.
+ */
+export const WORKSPACE_ID = process.env.ANTHROPIC_WORKSPACE_ID ?? '';
+
+export function anthropicProvider(
+  apiKey: string,
+  model = DEFAULT_MODEL,
+  workspaceId = WORKSPACE_ID,
+): ModelProvider {
   return {
     name: 'anthropic',
     async complete(messages, system) {
@@ -112,6 +128,7 @@ export function anthropicProvider(apiKey: string, model = DEFAULT_MODEL): ModelP
             'content-type': 'application/json',
             'x-api-key': apiKey,
             'anthropic-version': '2023-06-01',
+            ...(workspaceId ? { 'anthropic-workspace-id': workspaceId } : {}),
           },
           body: JSON.stringify({ model, max_tokens: 1024, system, messages }),
         });

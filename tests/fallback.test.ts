@@ -126,3 +126,29 @@ describe('the failure reason travels with the response', () => {
     expect(p.lastError()).toBeNull();
   });
 });
+
+describe('organization-scoped keys', () => {
+  it('sends anthropic-workspace-id when one is configured', async () => {
+    const { anthropicProvider } = await import('../src/providers/index.js');
+    let sent: Record<string, string> = {};
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      sent = (init as RequestInit).headers as Record<string, string>;
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), { status: 200 });
+    });
+    await anthropicProvider('k', 'claude-sonnet-5', 'wrkspc_abc').complete([], '');
+    expect(sent['anthropic-workspace-id']).toBe('wrkspc_abc');
+    spy.mockRestore();
+  });
+
+  it('omits the header entirely when none is set — a workspace-scoped key needs none', async () => {
+    const { anthropicProvider } = await import('../src/providers/index.js');
+    let sent: Record<string, string> = {};
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      sent = (init as RequestInit).headers as Record<string, string>;
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '{}' }] }), { status: 200 });
+    });
+    await anthropicProvider('k', 'claude-sonnet-5', '').complete([], '');
+    expect('anthropic-workspace-id' in sent).toBe(false);
+    spy.mockRestore();
+  });
+});

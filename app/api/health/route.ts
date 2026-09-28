@@ -15,7 +15,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { DEFAULT_MODEL, REQUEST_TIMEOUT_MS } from '../../../src/providers/index.js';
+import { DEFAULT_MODEL, REQUEST_TIMEOUT_MS, WORKSPACE_ID } from '../../../src/providers/index.js';
 import { recentFallbacks } from '../../../src/observability/fallbackLog.js';
 import { REVIEW_STATE, DEMO_EXPIRY, isExpired, unresolvedGates } from '../../../src/config/reviewState.js';
 
@@ -38,6 +38,9 @@ export async function GET() {
       keyLength: key ? key.length : 0,
       id: DEFAULT_MODEL,
       timeoutMs: REQUEST_TIMEOUT_MS,
+      // Required for an organization-scoped key, ignored by a workspace-scoped
+      // one. Empty here plus a 400 about workspaces means this is the problem.
+      workspaceId: WORKSPACE_ID || null,
     },
 
     /**
