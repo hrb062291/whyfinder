@@ -34,23 +34,35 @@ export function withFallback(
   primary: ModelProvider,
   backup: ModelProvider,
   onFallback?: (r: FallbackRecord) => void,
-): ModelProvider & { lastMode: () => 'primary' | 'fallback' | 'unused' } {
+): ModelProvider & {
+  lastMode: () => 'primary' | 'fallback' | 'unused';
+  lastError: () => string | null;
+} {
   let mode: 'primary' | 'fallback' | 'unused' = 'unused';
+  let lastError: string | null = null;
   return {
     name: primary.name,
     lastMode: () => mode,
+    /**
+     * The reason travels WITH the response.
+     *
+     * An in-process log is the obvious place for this and the wrong one on
+     * serverless: each request may land on a fresh instance, so the turn that
+     * failed and the diagnostic that asks why are different processes, and the
+     * log reads empty while the app is plainly degraded. Whoever asks has to be
+     * told by the same call that failed.
+     */
+    lastError: () => lastError,
     async complete(messages, system) {
       try {
         const out = await primary.complete(messages, system);
         mode = 'primary';
+        lastError = null;
         return out;
       } catch (e) {
         mode = 'fallback';
-        onFallback?.({
-          at: new Date().toISOString(),
-          provider: primary.name,
-          error: e instanceof Error ? e.message : String(e),
-        });
+        lastError = e instanceof Error ? e.message : String(e);
+        onFallback?.({ at: new Date().toISOString(), provider: primary.name, error: lastError });
         return backup.complete(messages, system);
       }
     },

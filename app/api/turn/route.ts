@@ -179,7 +179,13 @@ export async function POST(req: Request) {
       systemPrompt: systemPrompt(willBe),
       thirdPartyNames: [],
     });
-    return NextResponse.json({ ...r, mode: live ? live.lastMode() : 'fixtures' });
+    return NextResponse.json({
+      ...r,
+      mode: live ? live.lastMode() : 'fixtures',
+      // Null unless the live call failed. Carries the upstream status and
+      // message, never the key.
+      fallbackReason: live ? live.lastError() : null,
+    });
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     console.error('[whyfinder] turn failed:', detail);

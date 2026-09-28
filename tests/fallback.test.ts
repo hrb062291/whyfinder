@@ -103,3 +103,26 @@ describe('the default model id', () => {
     expect(DEFAULT_MODEL).not.toBe('claude-sonnet-4-5');
   });
 });
+
+describe('the failure reason travels with the response', () => {
+  it('is exposed on the same call that fell back', async () => {
+    const p = withFallback(failing('Anthropic 401: invalid x-api-key'), fixtureProvider([BACKUP]));
+    expect(p.lastError()).toBeNull();
+    await p.complete([], '');
+    expect(p.lastMode()).toBe('fallback');
+    expect(p.lastError()).toMatch(/401/);
+  });
+
+  it('clears once a call succeeds, so a stale reason is never reported', async () => {
+    let fail = true;
+    const flaky = {
+      name: 'anthropic' as const,
+      async complete() { if (fail) { fail = false; throw new Error('blip'); } return OK; },
+    };
+    const p = withFallback(flaky, fixtureProvider([BACKUP]));
+    await p.complete([], '');
+    expect(p.lastError()).toMatch(/blip/);
+    await p.complete([], '');
+    expect(p.lastError()).toBeNull();
+  });
+});
