@@ -21,6 +21,7 @@ import {
 } from '../../../src/providers/index.js';
 import { assertServable } from '../../../src/config/reviewState.js';
 import { recordFallback } from '../../../src/observability/fallbackLog.js';
+import { QUESTIONS } from '../../../src/content/questions.js';
 import type { Entry } from '../../../src/types/index.js';
 
 export const runtime = 'nodejs';
@@ -40,12 +41,34 @@ export const maxDuration = 60;
  * safe to hand this prompt to a model we do not control.
  */
 function systemPrompt(entries: Entry[]): string {
-  const catalogue = entries.map((e) => `  ${e.id}: ${e.text}`).join('\n');
+  /**
+   * Each answer is paired with the question that drew it out.
+   *
+   * Without this the model sees "I quit the choir after two years" with no idea
+   * whether that answered "what have you quit?" or "what do people come to you
+   * for?" — and the difference changes what the sentence means. Volunteered
+   * material is marked as such, because an answer and an offering are not the
+   * same kind of evidence.
+   *
+   * The question text is included ONLY for questions already asked. The bank is
+   * never shown: a model that could see the whole list could reference a heavy
+   * question the gate has not unlocked, which is a way around C-23.
+   */
+  const catalogue = entries
+    .map((e) => {
+      const q = e.questionId ? QUESTIONS.find((x) => x.id === e.questionId) : undefined;
+      if (q) return `  ${e.id}\n    asked: ${q.text}\n    said:  ${e.text}`;
+      return `  ${e.id}\n    volunteered: ${e.text}`;
+    })
+    .join('\n\n');
+
   return `You are the mentor voice in WhyFinder, a tool that helps a person notice
 patterns in their own life. You are not a therapist, pastor or counselor, and you
 do not know what God intends for anyone.
 
-Here is everything this person has told you, with the id of each:
+Here is everything this person has told you, each with the question that drew it
+out. Some entries were volunteered rather than answered — treat those as offered
+freely, not as replies.
 
 ${catalogue}
 
@@ -62,9 +85,10 @@ Hard rules. Output that breaks any of these is discarded before the person sees 
 
 - "evidence" must name at least TWO different ids from the list above. Use the ids
   exactly as written. Never invent one.
-- "concreteNouns" must contain words that appear VERBATIM in the text above — a
-  place, role, event, activity or person they actually named. Never a trait word
-  like "authenticity" or "connection". Each noun must also appear in "body".
+- "concreteNouns" must contain words the person themselves wrote — from the
+  "said" or "volunteered" lines, never from a question WhyFinder asked. A place,
+  role, event, activity or person they actually named. Never a trait word like
+  "authenticity" or "connection". Each noun must also appear in "body".
 - "body" must be a hypothesis or a question, never a claim about who they are.
   "Worth exploring whether…", "Does that fit?", "might", "seems" are all fine.
 - Never write "you are a", "your purpose is", "your calling is", "you're the kind

@@ -263,3 +263,50 @@ describe('C-15 — the filter holds with prompt rules removed', () => {
     expect(v.suppressedBody).toBe('Your purpose is to build.');
   });
 });
+
+/**
+ * The prompt now pairs each answer with the question that drew it out, so the
+ * model can see WhyFinder's own words as well as the person's. That creates a
+ * new way to fake specificity: lift a concrete noun out of the QUESTION.
+ *
+ * C-11 checks nouns against stored entries only — the user's text, never ours —
+ * so this is already blocked. These assert it stays blocked.
+ */
+describe('C-11 — a noun from our question is not a noun from them', () => {
+  const asked: FilterContext = {
+    entriesById: {
+      // The question was "What did you spend hours on as a kid?"
+      // The person's answer mentions no hobby by name.
+      e1: 'Honestly not much that I can remember. I was quite a solitary kid.',
+      e2: 'These days it is mostly the allotment on a Sunday.',
+    },
+    userSuppliedLabels: [],
+    thirdPartyNames: [],
+    reviewState: 'DEMO',
+  };
+
+  it('blocks a noun taken from the question rather than the answer', () => {
+    const v = filterSynthesis(
+      synth({
+        body: 'What you spent hours on as a kid might still be there in the allotment. Worth exploring?',
+        evidence: ['e1', 'e2'],
+        concreteNouns: ['hours on as a kid', 'allotment'],
+      }),
+      asked,
+    );
+    const c11 = v.violations.find((x) => x.constraint === 'C-11');
+    expect(c11?.match).toContain('hours on as a kid');
+  });
+
+  it('permits a noun the person actually wrote', () => {
+    const v = filterSynthesis(
+      synth({
+        body: 'The allotment keeps coming up. Worth exploring whether that matters?',
+        evidence: ['e1', 'e2'],
+        concreteNouns: ['allotment'],
+      }),
+      asked,
+    );
+    expect(v.violations.map((x) => x.constraint)).not.toContain('C-11');
+  });
+});
