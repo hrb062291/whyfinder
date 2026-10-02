@@ -77,31 +77,61 @@ export function inCooldown(state: GateState, questionId: string, now: Date): boo
 /** Pure deflections. These never count toward a gate. */
 const DEFLECTIONS = [
   'skip', 'pass', 'next', 'idk', 'dunno', 'no idea', 'nothing', 'none', 'na', 'n/a',
-  'no', 'nope', 'not sure', 'i dont know', "i don't know", 'cant think of anything',
-  "can't think of anything", 'no comment', '-', '?',
+  'no', 'nope', 'not sure', 'unsure', 'i dont know', "i don't know", 'dont know',
+  "don't know", 'cant think of anything', "can't think of anything", 'no comment',
+  'nothing really', 'not really', 'maybe', 'hmm', '-', '?', '...',
 ];
 
-const MIN_WORDS = 5;
+/** Trailing or leading filler that does not change whether an answer deflects. */
+const FILLER = /\b(really|honestly|i think|i guess|i mean|sorry|yeah|well|just|like|um|uh)\b/g;
+
+/**
+ * Words that carry no content on their own. An answer made only of these is
+ * not something a reflection can be built on.
+ */
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'of', 'to', 'in', 'on', 'at', 'for',
+  'with', 'about', 'from', 'by', 'is', 'am', 'are', 'was', 'were', 'be', 'been',
+  'being', 'do', 'does', 'did', 'have', 'has', 'had', 'it', 'its', 'this', 'that',
+  'these', 'those', 'i', 'me', 'my', 'mine', 'we', 'us', 'our', 'you', 'your',
+  'he', 'him', 'his', 'she', 'her', 'they', 'them', 'their', 'so', 'then', 'than',
+  'very', 'quite', 'some', 'any', 'all', 'lot', 'lots', 'much', 'more', 'most',
+  'thing', 'things', 'stuff', 'bit', 'kind', 'sort', 'what', 'which', 'who',
+]);
 
 /**
  * Usable as C-07 evidence — one threshold serving both rules.
  *
- * Note on P-03: not knowing is a normal place to be, and the search itself is
- * worth something. A bare "I don't know" is still a deflection and does not
- * unlock a deeper tier; "I don't know, I've never really thought about it,
- * maybe something to do with…" is a real answer and does.
+ * This was a word count (five or more) and that was wrong in a way that broke
+ * the product. "Fixing the car" and "the garden" are real answers with real
+ * nouns, and both were counted as deflections: the medium tier never unlocked,
+ * no synthesis was ever possible, and each question went into cooldown. The
+ * app walked through light questions forever and never deepened.
  *
- * RISK: this is the weakest link in the state machine (§5 risk register).
- * The gap between honest uncertainty and tapping through is two characters
- * wide. Run the medium gate conservatively until real sessions tune it.
+ * Length was never the signal. CONTENT is. An answer counts when it is not an
+ * outright deflection and contains at least one word that names something.
+ *
+ * P-03 holds: a bare "I don't know" is a deflection and does not unlock a
+ * deeper tier, but "I don't know, I have never thought about it — maybe the
+ * allotment" names something and does.
  */
 export function isSubstantive(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/[.!,]+$/g, '');
-  if (!t) return false;
-  if (DEFLECTIONS.includes(t)) return false;
-  const words = t.split(/\s+/).filter(Boolean);
-  if (words.length < MIN_WORDS) return false;
-  return true;
+  const raw = text.trim().toLowerCase();
+  if (!raw) return false;
+
+  // Strip punctuation and filler before deciding whether it is a pure deflection,
+  // so "dunno really" and "nope." read the same as "dunno" and "nope".
+  const stripped = raw
+    .replace(/[.!,;:]+/g, ' ')
+    .replace(FILLER, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!stripped) return false;
+  if (DEFLECTIONS.includes(stripped)) return false;
+
+  const words = stripped.split(/\s+/).filter(Boolean);
+  const content = words.filter((w) => !STOPWORDS.has(w.replace(/[^a-z']/g, '')));
+  return content.length >= 1;
 }
 
 // ------------------------------------------------------------ tier gates

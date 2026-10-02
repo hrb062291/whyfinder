@@ -47,14 +47,34 @@ describe('isSubstantive', () => {
     'rejects the deflection %j', (t) => expect(isSubstantive(t)).toBe(false),
   );
 
-  it('rejects a one-word reply', () => expect(isSubstantive('Work.')).toBe(false));
-
   it('accepts a real answer', () => expect(isSubstantive(REAL)).toBe(true));
 
   it('accepts honest uncertainty that is actually an answer (P-03)', () => {
     expect(
       isSubstantive("I don't know, I've never really thought about it before now."),
     ).toBe(true);
+  });
+
+  /**
+   * REGRESSION. These were counted as deflections under a five-word minimum.
+   * Every one of them is a real answer naming a real thing, and treating them
+   * as refusals meant the medium tier never unlocked, no synthesis was ever
+   * possible, and each question went into a 14-day cooldown. The app walked
+   * through light questions forever and looked like it had no question bank.
+   */
+  it.each(['the garden', 'fixing the car', 'my kids', 'work stuff', 'Work.',
+           'the allotment', 'my mum', 'woodwork'])(
+    'accepts the short but real answer %j', (t) => expect(isSubstantive(t)).toBe(true),
+  );
+
+  it.each(['skip', 'idk', 'dunno really', 'not sure', 'nope.', 'nothing really',
+           'no', '...', '?', '  ', 'a lot of things'])(
+    'still rejects the deflection %j', (t) => expect(isSubstantive(t)).toBe(false),
+  );
+
+  it('length is not the test — a long non-answer is still a deflection', () => {
+    expect(isSubstantive('a lot of things')).toBe(false);
+    expect(isSubstantive('the garden')).toBe(true);
   });
 });
 
@@ -204,5 +224,25 @@ describe('follow-ups and priority in selection', () => {
   it('priority never jumps a tier gate', () => {
     const s = emptyState('u');
     expect(nextQuestion(s)!.tier).toBe('light');
+  });
+});
+
+describe('short answers advance the conversation', () => {
+  const SHORT = ['the garden', 'fixing the car', 'my kids'];
+
+  it('three short real answers unlock the medium tier', () => {
+    let s = emptyState('u');
+    const ids = ['dt1', 'wr1', 'en1'];
+    ids.forEach((id, i) => { s = answer(s, id, SHORT[i]); });
+    expect(s.substantiveAnswers).toHaveLength(3);
+    expect(s.deflections).toHaveLength(0);
+    expect(tierUnlocked('medium', s)).toBe(true);
+  });
+
+  it('a short real answer never burns the question into cooldown', () => {
+    let s = emptyState('u');
+    s = answer(s, 'dt1', 'the garden');
+    expect(s.deflections).toEqual([]);
+    expect(s.retiredQuestionIds).toEqual([]);
   });
 });
