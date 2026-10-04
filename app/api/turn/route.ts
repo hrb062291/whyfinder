@@ -2,7 +2,7 @@
  * The turn endpoint.
  *
  * The engine runs SERVER-SIDE. The client holds session state and posts it back
- * each turn — no database needed for the demo, and it works on serverless.
+ * each turn. No database needed for the demo, and it works on serverless.
  *
  * A tampered client could send whatever state it liked. That does not weaken any
  * constraint: the filter, the tier gate and the acute-signal check all run here,
@@ -10,12 +10,20 @@
  * lying about its own history, and the filter still judges the output.
  *
  * C-15: no bypass parameter is accepted from the client. There is nothing to send.
+ *
+ * Changes in this version: turns go through takeConversationTurn (reply layer,
+ * faith Q&A, experiments), and two small actions ('experiment', 'reflect') carry
+ * the experiment card's taps. takeTurn itself is untouched.
  */
 
 import { NextResponse } from 'next/server';
 import {
-  begin, endSession, newSession, takeTurn, type SessionState,
+  begin, endSession, newSession, type SessionState,
 } from '../../../src/engine/session.js';
+import { takeConversationTurn, type ConvState } from '../../../src/engine/conversation.js';
+import {
+  chooseExperiment, recordReflection, type ExperimentChoice, type Feel,
+} from '../../../src/content/experiments.js';
 import {
   anthropicProvider, fixtureProvider, withFallback,
 } from '../../../src/providers/index.js';
@@ -27,32 +35,16 @@ import type { Entry } from '../../../src/types/index.js';
 export const runtime = 'nodejs';
 
 /**
- * The model call needs room. The platform default is short enough that a slow
- * upstream response kills the function, and a killed function returns an empty
- * 500 — no error body, no fallback, nothing to debug from.
+ * The model call needs room. A turn can now make up to three model calls (the
+ * synthesis, a retry, and the reply), so the ceiling stays generous.
  */
 export const maxDuration = 60;
 
-/**
- * The constraint prompt.
- *
- * This is the FIRST line of defence and never the only one. Every rule below is
- * also enforced after generation by the filter (C-15), which is what makes it
- * safe to hand this prompt to a model we do not control.
- */
 function systemPrompt(entries: Entry[]): string {
   /**
-   * Each answer is paired with the question that drew it out.
-   *
-   * Without this the model sees "I quit the choir after two years" with no idea
-   * whether that answered "what have you quit?" or "what do people come to you
-   * for?" — and the difference changes what the sentence means. Volunteered
-   * material is marked as such, because an answer and an offering are not the
-   * same kind of evidence.
-   *
-   * The question text is included ONLY for questions already asked. The bank is
-   * never shown: a model that could see the whole list could reference a heavy
-   * question the gate has not unlocked, which is a way around C-23.
+   * Each answer is paired with the question that drew it out. Volunteered
+   * material is marked as such. The question text is included ONLY for
+   * questions already asked; the bank is never shown (C-23).
    */
   const catalogue = entries
     .map((e) => {
@@ -107,8 +99,7 @@ If nothing real has surfaced yet, say so in "body" rather than inventing a patte
 
 /**
  * The fallback. Built from this person's own entries so it satisfies C-07 and
- * C-11 rather than being blocked by the app's own filter — which is what
- * happened the first time, when the canned text named nothing specific.
+ * C-11 rather than being blocked by the app's own filter.
  */
 function fixtureFor(entries: Entry[]) {
   const first = entries.slice(0, 2);
@@ -131,9 +122,13 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json()) as {
-    action: 'begin' | 'turn' | 'end';
-    state?: SessionState;
+    action: 'begin' | 'turn' | 'end' | 'experiment' | 'reflect';
+    state?: ConvState;
     text?: string;
+    experimentId?: string;
+    choice?: ExperimentChoice;
+    feel?: Feel;
+    note?: string;
   };
 
   if (body.action === 'begin') {
@@ -141,15 +136,27 @@ export async function POST(req: Request) {
   }
   if (!body.state) return NextResponse.json({ error: 'missing state' }, { status: 400 });
   if (body.action === 'end') {
-    return NextResponse.json({ state: body.state, output: endSession(body.state) });
+    return NextResponse.json({ state: body.state, output: endSession(body.state as SessionState) });
+  }
+
+  // The experiment card's taps. State only; no model call.
+  if (body.action === 'experiment' && body.experimentId && body.choice) {
+    return NextResponse.json({
+      state: chooseExperiment(body.state, body.experimentId, body.choice),
+    });
+  }
+  if (body.action === 'reflect' && body.experimentId && body.feel) {
+    return NextResponse.json({
+      state: recordReflection(body.state, body.experimentId, body.feel, body.note, new Date()),
+    });
   }
 
   const state = body.state;
 
   /**
    * takeTurn appends this turn's entry internally, so the prompt and the
-   * fallback both have to anticipate it — otherwise the model is asked to cite
-   * two entries when only one is visible to it.
+   * fallback both have to anticipate it. It carries the question the person is
+   * answering, so the model does not read an answer as volunteered.
    */
   const willBe: Entry[] = [
     ...state.entries,
@@ -159,7 +166,8 @@ export async function POST(req: Request) {
       sessionId: state.sessionId,
       createdAt: new Date().toISOString(),
       text: body.text ?? '',
-      source: 'answer',
+      source: state.currentQuestionId ? 'answer' : 'volunteered',
+      questionId: state.currentQuestionId ?? undefined,
     },
   ];
 
@@ -167,23 +175,20 @@ export async function POST(req: Request) {
   const backup = fixtureFor(willBe);
   const live = key ? withFallback(anthropicProvider(key), backup, recordFallback) : null;
 
-  /**
-   * Last-resort guard. withFallback covers a failing model call, but anything
-   * that throws OUTSIDE it — a parse error, a bad state payload — would
-   * otherwise surface as an empty 500 that tells nobody anything. The
-   * conversation continues either way; a turn never dies silently.
-   */
   try {
-    const r = await takeTurn(state, body.text ?? '', {
-      provider: live ?? backup,
-      systemPrompt: systemPrompt(willBe),
-      thirdPartyNames: [],
+    const r = await takeConversationTurn(state, body.text ?? '', {
+      turn: {
+        provider: live ?? backup,
+        systemPrompt: systemPrompt(willBe),
+        thirdPartyNames: [],
+      },
+      // Replies and answers need the real model. On fixtures they are skipped,
+      // never faked.
+      live: live ?? undefined,
     });
     return NextResponse.json({
       ...r,
       mode: live ? live.lastMode() : 'fixtures',
-      // Null unless the live call failed. Carries the upstream status and
-      // message, never the key.
       fallbackReason: live ? live.lastError() : null,
     });
   } catch (e) {

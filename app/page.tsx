@@ -4,18 +4,30 @@
  * The first screen.
  *
  * Every constraint that matters runs on the server (/api/turn). This component
- * renders what survives the filter and nothing else — there is no client-side
+ * renders what survives the filter and nothing else. There is no client-side
  * path that displays a suppressed body.
+ *
+ * Added: a short reply under what you said, a gentle care line, faith answers
+ * labelled by kind, and one small experiment card with a two-tap reflect step.
+ * No streaks, counts or badges anywhere (C-27).
  */
 
 import { useEffect, useRef, useState } from 'react';
 import type { Synthesis } from '../src/types/index.js';
 
+type Answer = {
+  body: string; kind: string; scripture: string[]; questionsToConsider: string[]; counsel: string[];
+};
+type Experiment = { id: string; title: string };
+
 type Turn =
   | { kind: 'disclosure' }
   | { kind: 'app'; text: string }
+  | { kind: 'care'; text: string }
   | { kind: 'you'; text: string }
-  | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] };
+  | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] }
+  | { kind: 'answer'; answer: Answer }
+  | { kind: 'experiment'; experiment: Experiment };
 
 const RESOURCES = [
   ['988 Suicide & Crisis Lifeline', 'Call or text 988',
@@ -29,11 +41,20 @@ const RESOURCES = [
 const OPEN_GATES = [
   ['Crisis response wording',
    'Borrowed verbatim from 988 and Crisis Text Line. A clinician has not reviewed our own version.'],
+  ['Gentle check-in wording',
+   'The short lines shown for lower-level distress are ours, and a clinician has not reviewed them.'],
   ['The harder questions',
    'Questions about pain, regret, fear and loss are switched off until a pastoral reviewer has signed off on them.'],
   ['How we label scripture',
    'The scheme that separates what the Bible says from how a tradition reads it has not been reviewed.'],
 ];
+
+const KIND_LABEL: Record<string, string> = {
+  biblical_teaching: 'What the Bible says',
+  christian_interpretation: 'How many Christians read it',
+  psychological_research: 'What research suggests',
+  ai_inference: 'A guess, not a finding',
+};
 
 export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([{ kind: 'disclosure' }]);
@@ -43,8 +64,12 @@ export default function Home() {
   const [sheet, setSheet] = useState<null | 'crisis' | 'gates'>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const started = useRef(false);
 
   useEffect(() => {
+    // Strict Mode runs effects twice in dev; begin once.
+    if (started.current) return;
+    started.current = true;
     fetch('/api/turn', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -63,6 +88,21 @@ export default function Home() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns]);
+
+  /** Experiment taps update server-shaped state only; no model call. */
+  async function post(payload: Record<string, unknown>) {
+    try {
+      const res = await fetch('/api/turn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...payload, state }),
+      });
+      const r = await res.json();
+      if (r.state) setState(r.state);
+    } catch {
+      /* The card still resolves locally; nothing is lost but the note. */
+    }
+  }
 
   async function submit() {
     const text = value.trim();
@@ -91,6 +131,9 @@ export default function Home() {
         setSheet('crisis');
       } else {
         const next: Turn[] = [];
+        if (o.care) next.push({ kind: 'care', text: o.care.text });
+        if (o.reply) next.push({ kind: 'app', text: o.reply });
+        if (o.answer) next.push({ kind: 'answer', answer: o.answer });
         if (o.synthesis) {
           const quotes: string[] = (o.synthesis.evidence as string[])
             .map((id: string) => (r.state.entries as { id: string; text: string }[])
@@ -99,7 +142,9 @@ export default function Home() {
           next.push({ kind: 'synthesis', synthesis: o.synthesis, quotes });
         }
         if (o.text) next.push({ kind: 'app', text: o.text });
+        if (o.experiment) next.push({ kind: 'experiment', experiment: o.experiment });
         setTurns((t) => [...t, ...next]);
+        if (o.care?.showResources) setSheet('crisis');
       }
     } catch {
       setTurns((t) => [...t, { kind: 'app', text: 'Something went wrong on my end. Try that again?' }]);
@@ -126,8 +171,18 @@ export default function Home() {
             <div className="turn" key={i}>
               {t.kind === 'disclosure' && <Disclosure onGates={() => setSheet('gates')} />}
               {t.kind === 'app' && <p className="app-text">{t.text}</p>}
+              {t.kind === 'care' && <p className="app-text">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
               {t.kind === 'synthesis' && <SynthesisCard body={t.synthesis.body} quotes={t.quotes} />}
+              {t.kind === 'answer' && <AnswerCard a={t.answer} />}
+              {t.kind === 'experiment' && (
+                <ExperimentCard
+                  x={t.experiment}
+                  onChoose={(choice) => void post({ action: 'experiment', experimentId: t.experiment.id, choice })}
+                  onReflect={(feel, note) =>
+                    void post({ action: 'reflect', experimentId: t.experiment.id, feel, note })}
+                />
+              )}
             </div>
           ))}
           <div ref={bottom} />
@@ -248,6 +303,115 @@ function SynthesisCard({ body, quotes }: { body: string; quotes: string[] }) {
                   onClick={() => setResolved('Dropped, along with anything built on it.')}>
             That&rsquo;s not it
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A faith answer. Labelled by kind, and it ends in questions and people, not a verdict. */
+function AnswerCard({ a }: { a: Answer }) {
+  return (
+    <div className="synthesis">
+      <div className="syn-kind">{KIND_LABEL[a.kind] ?? 'A thought to weigh'}</div>
+      <div className="syn-body">{a.body}</div>
+      {a.scripture.length > 0 && (
+        <div className="syn-evidence">
+          <div className="syn-evidence-label">Where to read</div>
+          {a.scripture.map((s, i) => <p className="quote" key={i}>{s}</p>)}
+        </div>
+      )}
+      {a.questionsToConsider.length > 0 && (
+        <div className="syn-evidence">
+          <div className="syn-evidence-label">Questions to sit with</div>
+          {a.questionsToConsider.map((q, i) => <p className="quote" key={i}>{q}</p>)}
+        </div>
+      )}
+      {a.counsel.length > 0 && (
+        <div className="syn-evidence">
+          <div className="syn-evidence-label">People worth talking to</div>
+          {a.counsel.map((c, i) => <p className="quote" key={i}>{c}</p>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One small thing to try. Declining costs nothing and is never remembered
+ * against anyone. The reflect step is two taps and an optional line.
+ */
+function ExperimentCard({ x, onChoose, onReflect }: {
+  x: Experiment;
+  onChoose: (c: 'accept' | 'own' | 'skip') => void;
+  onReflect: (f: 'more' | 'less' | 'unsure', note?: string) => void;
+}) {
+  const [phase, setPhase] = useState<'offer' | 'accepted' | 'reflect' | 'own' | 'skipped' | 'done'>('offer');
+  const [note, setNote] = useState('');
+  const [feel, setFeel] = useState<null | 'more' | 'less' | 'unsure'>(null);
+
+  if (phase === 'skipped') return <div className="synthesis"><div className="syn-resolved">No problem. It will keep.</div></div>;
+  if (phase === 'own') {
+    return (
+      <div className="synthesis">
+        <div className="syn-resolved">
+          Good, your own idea is better. Try it, and tell me here how it went whenever you like.
+        </div>
+      </div>
+    );
+  }
+  if (phase === 'done') return <div className="synthesis"><div className="syn-resolved">Thank you. That helps.</div></div>;
+
+  return (
+    <div className="synthesis">
+      <div className="syn-kind">Something small to try</div>
+      <div className="syn-body">{x.title}</div>
+      {phase === 'offer' ? (
+        <div className="syn-actions">
+          <button className="btn btn-accept" onClick={() => { onChoose('accept'); setPhase('accepted'); }}>
+            I&rsquo;ll try it
+          </button>
+          <button className="btn" onClick={() => { onChoose('own'); setPhase('own'); }}>
+            I have my own idea
+          </button>
+          <button className="btn btn-ghost" onClick={() => { onChoose('skip'); setPhase('skipped'); }}>
+            Not now
+          </button>
+        </div>
+      ) : phase === 'accepted' ? (
+        <div className="syn-actions">
+          <button className="btn btn-accept" onClick={() => setPhase('reflect')}>
+            I&rsquo;ve tried it
+          </button>
+          <span className="composer-note">Come back to this card whenever you have.</span>
+        </div>
+      ) : (
+        <div className="syn-evidence">
+          <div className="syn-evidence-label">Afterwards, how did it feel?</div>
+          <div className="syn-actions">
+            {(['more', 'less', 'unsure'] as const).map((f) => (
+              <button key={f} className={`btn ${feel === f ? 'btn-accept' : ''}`} onClick={() => setFeel(f)}>
+                {f === 'more' ? 'More of that' : f === 'less' ? 'Less of that' : 'Not sure'}
+              </button>
+            ))}
+          </div>
+          {feel && (
+            <>
+              <input
+                className="reflect-note"
+                placeholder="A few words, if you like"
+                aria-label="A few words about how it went"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+              />
+              <div className="syn-actions">
+                <button className="btn btn-accept"
+                        onClick={() => { onReflect(feel, note); setPhase('done'); }}>
+                  Done
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

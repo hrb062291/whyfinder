@@ -268,3 +268,5 @@ img { max-width: 100%; }
   border-top: 1px solid var(--rule); margin-top: 8px; padding-top: 26px;
   font-size: 14.5px; color: var(--muted); max-width: 62ch;
 }
+
+.reflect-note { width: 100%; margin: 12px 0; padding: 10px 12px; font: inherit; border: 1px solid #ddd; border-radius: 10px; background: transparent; }
