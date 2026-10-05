@@ -34,6 +34,8 @@ export type ConvState = SessionState & {
   support?: SupportState;
   /** How many follow-ups in a row we have asked. After two, the bank gets a turn. */
   followStreak?: number;
+  /** Number of entries when the last guess was offered. Spaces out guesses. */
+  lastGuessAt?: number;
   /** Turns left to stay gentle after something tender was said. */
   tenderLeft?: number;
 };
@@ -90,7 +92,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Name something specific they just told you, in their own words, so they feel heard.
 - If something they said EARLIER connects to it, you may set the two side by side as a question, using their own words: "Earlier you mentioned the billing system; does explaining things come up here too?" Never say one caused the other.
 - Warm and plain, like a thoughtful friend. No advice, no diagnosis, no explaining why they feel or act this way.
-- Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic ("that sounds heavy").
+- Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
 - Only if the message is empty of anything concrete, reply with exactly: NONE
@@ -117,6 +119,7 @@ Aim the question at ${aim}
 
 - Use one of their own words for the thing you are asking about.
 - Open-ended: it should invite a sentence or two, not yes or no.
+- Avoid the stock phrases "carry", "heavy" and "long stretch".
 - Sound natural. Do not recite their earlier words back in quotation marks; refer to them lightly, the way a person would.
 - Under 140 characters. One question mark. No advice and no explanation.
 - Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God unless they did.
@@ -329,6 +332,18 @@ function currentQuestion(s: SessionState): { text: string; id: string } {
  */
 const NO_SYNTHESIS: ModelProvider = { name: 'fixture', async complete() { return ''; } };
 
+/** Messages the person must send between one guess and the next. */
+export const GUESS_SPACING = 3;
+
+/**
+ * Guesses are spaced out. A pattern needs new material to stand on, and a card
+ * on every turn reads as pushing a conclusion. `lastGuessAt` is a plain count of
+ * entries at the time of the last guess; it holds no words.
+ */
+export function tooSoonForGuess(s: ConvState, entriesNow: number): boolean {
+  return typeof s.lastGuessAt === 'number' && entriesNow - s.lastGuessAt < GUESS_SPACING;
+}
+
 /** Back to the question bank after the support pause. No model call. */
 export function resumeQuestions(
   s: ConvState, now: Date = new Date(),
@@ -402,12 +417,13 @@ export async function takeConversationTurn(
     // repeating "Tell me what has been on your mind lately."
     const asked = s.currentQuestionId;
     const repeatable = !asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked);
-    const care = (ev.showCard && tier === 'mild' ? null : careFor(tier)) ?? undefined;
+    // A real answer already points to people. The stock mild line only stays if the answer failed.
+    const care = ((ev.showCard || answer) && tier === 'mild' ? null : careFor(tier)) ?? undefined;
     return {
       state: { ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }) },
       output: {
         kind: 'question',
-        text: paused ? checkin : repeatable ? q.text : AFTER_ANSWER,
+        text: paused ? (ev.showCard || !answer ? checkin : AFTER_ANSWER) : repeatable ? q.text : AFTER_ANSWER,
         questionId: paused ? 'support' : repeatable ? q.id : 'followup',
         care,
         support: ev.showCard ? supportCard(tier) : undefined,
@@ -431,14 +447,14 @@ export async function takeConversationTurn(
   const tender = tenderNow || (phase >= 2 && !paused && (s.tenderLeft ?? 0) > 0);
   const tenderLeft = tenderNow ? 2 : Math.max(0, (s.tenderLeft ?? 0) - 1);
   const followP: Promise<string | null> =
-    phase >= 2 && live && (tier === 'none' || tier === 'mild') && !paused && !isThin(text)
-      && (tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
+    phase >= 2 && live && (tier === 'none' || tier === 'mild') && !ev.showCard && !isThin(text)
+      && (paused || tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
       ? generateFollowUp(live, heard).catch(() => null)
       : Promise.resolve(null);
 
   // No guess while the pause is on, after a thin answer, or before two real ones.
   const realAnswers = heard.filter((e) => !isThin(e.text)).length;
-  const hold = phase >= 2 && (paused || tender || isThin(text) || realAnswers < 2);
+  const hold = phase >= 2 && (paused || tender || isThin(text) || realAnswers < 2 || tooSoonForGuess(s, heard.length));
 
   const before = s.synthesesOffered.length;
   const r = await takeTurn(s, text, {
@@ -451,13 +467,16 @@ export async function takeConversationTurn(
   if (output.kind === 'acute') return { state, output };
 
   // The support pause. The bank does not advance; the entry is already recorded.
+  let pausedFollow: string | null = null;
   if (paused) {
     state = {
       ...state,
       gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
       currentQuestionId: 'support',
     };
-    output = { kind: 'question', text: checkin, questionId: 'support' };
+    // While paused, a real follow-up about what they just said beats the stock line.
+    pausedFollow = ev.showCard ? null : await followP;
+    output = { kind: 'question', text: pausedFollow ?? checkin, questionId: 'support' };
   }
 
   // The elevated line (it names 988) always stays. The card covers the mild one.
@@ -481,6 +500,9 @@ export async function takeConversationTurn(
   // question. Otherwise a follow-up asks. If they are hurting and there is
   // nothing good to ask, say so gently. None of these uses up a bank question:
   // the gate is put back, and the bank gets its turn on a later, lighter turn.
+  if (synthesis && state.synthesesOffered.length > before) {
+    state = { ...state, lastGuessAt: state.entries.length };
+  }
   const followUp = await followP;
   const hasGuess = Boolean(synthesis);
   if (!paused && !hasGuess && output.kind === 'question') {
@@ -529,7 +551,7 @@ export async function takeConversationTurn(
   // A real, specific reply beats the canned acknowledgement. The canned line
   // stays only when the model gave us nothing (and the support card, when shown,
   // already points to people).
-  if (tier === 'mild' && (output.reply || (output as { questionId?: string }).questionId === 'followup')) {
+  if (tier === 'mild' && (output.reply || pausedFollow || (output as { questionId?: string }).questionId === 'followup')) {
     delete output.care;
   }
 

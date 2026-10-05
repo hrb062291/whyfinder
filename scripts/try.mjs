@@ -11,7 +11,7 @@ const SCENARIOS = {
   'friends drifting': ['not much', 'I was feeling extremely anxious', 'im feeling extremely lost with my friends. It doesnt feel like we build each other up anymore. We just do different things and when we hang out we drain each other', 'help', "yes it's very urgent. I'm feeling lost and you're not giving me any direction"],
   'bible about anxiety': ['what does the bible say about anxiety', 'I have been overwhelmed with school and work', 'what is the point of you', 'back to the questions'],
   'bible about god': ['what does the bible say about god', 'who is god to me'],
-  'ordinary day': ['I spent most of Saturday rewiring the shed with Tom.', 'Mostly running new wire and swapping the breaker.', 'Tom held the flashlight and I did the wiring.', 'We talked about his new job the whole time', 'I guess I like building things with other people'],
+  'ordinary day': ['I spent most of Saturday rewiring the shed with Tom.', 'Mostly running new wire and swapping the breaker.', 'Tom held the flashlight and I did the wiring.', 'We talked about his new job the whole time', 'I guess I like building things with other people', 'Last week I helped my sister move and organised all her boxes by room', 'I fixed the fence with my dad on Sunday and we talked the whole time', 'At work I enjoy showing new hires how the invoices work'],
   'direction at work': ['I keep wondering if I should quit my job', 'I like the people but the work feels empty', 'how do I know what God wants me to do with my career'],
   'forgiveness': ['Tell me what the Bible says about forgiveness', 'my brother and I have not spoken in a year'],
   'distant from god': ['ive been feeling distant from god', 'connected', 'I think so'],
@@ -28,6 +28,7 @@ const FALLBACK = 'worth taking to a pastor or a mentor you trust';
 const out = [];
 for (const [name, lines] of Object.entries(SCENARIOS)) {
   out.push(`\n=================== ${name} ===================`);
+  const guessTurns = [];
   let { state, output } = await post({ action: 'begin' });
   out.push(`APP: ${output?.text ?? ''}`);
   for (const line of lines) {
@@ -48,7 +49,9 @@ for (const [name, lines] of Object.entries(SCENARIOS)) {
     if (o.support) out.push(`  [SUPPORT CARD SHOWN]`);
     if (o.experiment) out.push(`  [experiment offered: ${o.experiment.title}]`);
     out.push(`APP: ${o.text ?? '(' + o.kind + ')'}`);
+    if (o.synthesis) guessTurns.push(lines.indexOf(line) + 1);
   }
+  if (guessTurns.length) out.push(`\n[guess cards appeared on messages: ${guessTurns.join(', ')}]`);
 }
 writeFileSync('scripts/transcripts.txt', out.join('\n'));
 console.log(`Done. Wrote scripts/transcripts.txt (${out.length} lines). Paste its contents (or attach the file) and also copy any "[whyfinder] answer dropped" lines from the dev server window.`);

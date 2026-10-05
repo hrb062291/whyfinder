@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { Synthesis } from '../src/types/index.js';
+import './journal.css';
 
 type Answer = {
   body: string; kind: string; scripture: string[]; questionsToConsider: string[]; counsel: string[];
@@ -108,12 +109,49 @@ function clearSaved() {
 /** Their own words from last time, never a summary the app wrote about them. */
 function welcomeBack(state: Record<string, unknown>): string {
   const entries = (state.entries as { text: string }[] | undefined) ?? [];
-  const last = [...entries].reverse().find((e) => e.text.trim().split(/\s+/).length >= 4);
-  if (!last) return 'Welcome back. We can pick up where we left off.';
+  // Quote only something that reads like a sentence a person said: not pasted
+  // code or terminal output, and not a wall of text.
+  const readable = (t: string) =>
+    t.trim().split(/\s+/).length >= 4 && t.length <= 160 && !/[\\<>{}]|\bPS \b|https?:/.test(t);
+  const last = [...entries].reverse().find((e) => readable(e.text));
+  if (!last) return 'Welcome back. We can pick up where we left off, or you can start somewhere new.';
   const t = last.text.trim();
   const snippet = t.length > 90 ? `${t.slice(0, 90).replace(/\s+\S*$/, '')}\u2026` : t;
   return `Welcome back. Last time you said, \u201c${snippet}\u201d. We can pick up from there, or you can start somewhere new.`;
 }
+
+// ------------------------------------------------------------------ the journal (this device only)
+
+const JOURNAL_KEY = 'whyfinder.journal.v1';
+
+/** A guess the person chose to keep, in the exact words they approved. */
+type JournalItem = {
+  id: string; body: string; original?: string; quotes: string[];
+  status: 'kept' | 'edited'; at: number;
+};
+type Journal = { items: JournalItem[]; dropped: string[] };
+const EMPTY_JOURNAL: Journal = { items: [], dropped: [] };
+
+function loadJournal(): Journal {
+  try {
+    const raw = window.localStorage.getItem(JOURNAL_KEY);
+    if (!raw) return EMPTY_JOURNAL;
+    const v = JSON.parse(raw) as Journal;
+    return { items: Array.isArray(v.items) ? v.items : [], dropped: Array.isArray(v.dropped) ? v.dropped : [] };
+  } catch {
+    return EMPTY_JOURNAL;
+  }
+}
+
+function saveJournal(j: Journal) {
+  try { window.localStorage.setItem(JOURNAL_KEY, JSON.stringify(j)); } catch { /* storage unavailable */ }
+}
+
+function clearJournal() {
+  try { window.localStorage.removeItem(JOURNAL_KEY); } catch { /* nothing to clear */ }
+}
+
+type SavedEntry = { id: string; text: string; createdAt?: string };
 
 export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([{ kind: 'disclosure' }]);
@@ -125,11 +163,18 @@ export default function Home() {
   const bottom = useRef<HTMLDivElement>(null);
   const started = useRef(false);
   const [restored, setRestored] = useState(false);
+  const [journal, setJournal] = useState<Journal>(EMPTY_JOURNAL);
+  const [panel, setPanel] = useState(false);
+  const journalReady = useRef(false);
 
   useEffect(() => {
     // Strict Mode runs effects twice in dev; begin once.
     if (started.current) return;
     started.current = true;
+    setJournal(loadJournal());
+    journalReady.current = true;
+    // Wide screens have room for the journal beside the conversation.
+    if (window.matchMedia('(min-width: 1280px)').matches) setPanel(true);
     const saved = loadSaved();
     if (saved) {
       setState(saved.state);
@@ -161,8 +206,14 @@ export default function Home() {
     if (state) save(state, turns);
   }, [state, turns]);
 
+  useEffect(() => {
+    if (journalReady.current) saveJournal(journal);
+  }, [journal]);
+
   function startOver() {
     clearSaved();
+    clearJournal();
+    setJournal(EMPTY_JOURNAL);
     setRestored(false);
     setState(null);
     setTurns([{ kind: 'disclosure' }]);
@@ -209,6 +260,23 @@ export default function Home() {
     } catch {
       setTurns((t) => [...t, { kind: 'app', text: 'Something went wrong on my end. Try that again?' }]);
     }
+  }
+
+  function keepGuess(id: string, body: string, quotes: string[], edited = false, original?: string) {
+    setJournal((j) => ({
+      dropped: j.dropped.filter((d) => d !== id),
+      items: [...j.items.filter((x) => x.id !== id),
+        { id, body, quotes, status: edited ? 'edited' : 'kept', at: Date.now(), ...(edited ? { original } : {}) }],
+    }));
+  }
+  function dropGuess(id: string) {
+    setJournal((j) => ({ items: j.items.filter((x) => x.id !== id), dropped: [...j.dropped.filter((d) => d !== id), id] }));
+  }
+  function editKept(id: string, body: string) {
+    setJournal((j) => ({
+      ...j,
+      items: j.items.map((x) => (x.id === id ? { ...x, body, status: 'edited', original: x.original ?? x.body } : x)),
+    }));
   }
 
   async function submit() {
@@ -276,6 +344,9 @@ export default function Home() {
           {(restored || turns.length > 2) && (
             <button className="crisis-link" onClick={startOver}>Clear this device</button>
           )}
+          <button className="crisis-link" onClick={() => setPanel((o) => !o)} aria-expanded={panel}>
+            Journal{journal.items.length > 0 ? ` (${journal.items.length})` : ''}
+          </button>
           <button className="crisis-link" onClick={() => setSheet('crisis')}>
             Need to talk to someone now
           </button>
@@ -292,7 +363,18 @@ export default function Home() {
               {t.kind === 'welcome' && <p className="app-text">{t.text}</p>}
               {t.kind === 'notice' && <p className="reflect-note">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
-              {t.kind === 'synthesis' && <SynthesisCard body={t.synthesis.body} quotes={t.quotes} />}
+              {t.kind === 'synthesis' && (
+                <SynthesisCard
+                  body={t.synthesis.body}
+                  quotes={t.quotes}
+                  status={journal.items.find((x) => x.id === t.synthesis.id)?.status
+                    ?? (journal.dropped.includes(t.synthesis.id) ? 'dropped' : null)}
+                  onKeep={() => keepGuess(t.synthesis.id, t.synthesis.body, t.quotes)}
+                  onEdit={(words) => keepGuess(t.synthesis.id, words, t.quotes, true, t.synthesis.body)}
+                  onDrop={() => dropGuess(t.synthesis.id)}
+                  onOpen={() => setPanel(true)}
+                />
+              )}
               {t.kind === 'answer' && <AnswerCard a={t.answer} />}
               {t.kind === 'support' && (
                 <SupportCardView s={t.support} onResume={() => void resume()}
@@ -347,6 +429,18 @@ export default function Home() {
         </div>
       </div>
 
+      {panel && (
+        <JournalPanel
+          journal={journal}
+          entries={((state?.entries as SavedEntry[] | undefined) ?? [])}
+          verses={turns.flatMap((t) => (t.kind === 'answer' ? (t.answer.passages ?? []) : []))}
+          onClose={() => setPanel(false)}
+          onEdit={editKept}
+          onRemove={dropGuess}
+          onClear={startOver}
+        />
+      )}
+
       {sheet && (
         <Sheet onClose={() => setSheet(null)}
                title={sheet === 'crisis' ? 'People who can help right now' : "What's still open"}
@@ -400,8 +494,13 @@ function Disclosure({ onGates }: { onGates: () => void }) {
   );
 }
 
-function SynthesisCard({ body, quotes }: { body: string; quotes: string[] }) {
-  const [resolved, setResolved] = useState<string | null>(null);
+function SynthesisCard({ body, quotes, status, onKeep, onEdit, onDrop, onOpen }: {
+  body: string; quotes: string[];
+  status: 'kept' | 'edited' | 'dropped' | null;
+  onKeep: () => void; onEdit: (words: string) => void; onDrop: () => void; onOpen: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(body);
   return (
     <div className="synthesis">
       <div className="syn-kind">A guess, not a finding</div>
@@ -414,25 +513,142 @@ function SynthesisCard({ body, quotes }: { body: string; quotes: string[] }) {
           ))}
         </div>
       )}
-      {resolved ? (
-        <div className="syn-resolved">{resolved}</div>
-      ) : (
+      {status === 'kept' && (
+        <div className="syn-resolved">
+          Kept in your journal. <button className="j-link" onClick={onOpen}>Open journal</button>
+        </div>
+      )}
+      {status === 'edited' && (
+        <div className="syn-resolved">
+          Saved in your own words. <button className="j-link" onClick={onOpen}>Open journal</button>
+        </div>
+      )}
+      {status === 'dropped' && <div className="syn-resolved">Dropped. It is not in your journal.</div>}
+      {status === null && editing && (
+        <div className="j-edit">
+          <label className="j-edit-label" htmlFor="syn-edit">Say it in your own words. What gets saved is exactly what you write.</label>
+          <textarea id="syn-edit" className="j-edit-box" rows={3} value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <div className="syn-actions">
+            <button className="btn btn-accept" disabled={!draft.trim()}
+                    onClick={() => { onEdit(draft.trim()); setEditing(false); }}>Save</button>
+            <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {status === null && !editing && (
         <div className="syn-actions">
-          <button className="btn btn-accept"
-                  onClick={() => setResolved('Kept. You can change or remove this any time.')}>
-            Keep this
-          </button>
-          <button className="btn"
-                  onClick={() => setResolved('Edit it in your own words — what gets saved is exactly what you write.')}>
-            Edit
-          </button>
-          <button className="btn btn-ghost"
-                  onClick={() => setResolved('Dropped, along with anything built on it.')}>
-            That&rsquo;s not it
-          </button>
+          <button className="btn btn-accept" onClick={onKeep}>Keep this</button>
+          <button className="btn" onClick={() => { setDraft(body); setEditing(true); }}>Edit</button>
+          <button className="btn btn-ghost" onClick={onDrop}>That&rsquo;s not it</button>
         </div>
       )}
     </div>
+  );
+}
+
+type Verse = { reference: string; versionTitle: string; version: string; link?: string };
+
+/**
+ * The journal. Everything here comes from this device: the guesses the person
+ * kept (in the words they approved), what they said, and the passages we looked at.
+ * Nothing in it is sent anywhere.
+ */
+function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onClear }: {
+  journal: Journal; entries: SavedEntry[]; verses: Verse[];
+  onClose: () => void; onEdit: (id: string, body: string) => void; onRemove: (id: string) => void; onClear: () => void;
+}) {
+  const [editId, setEditId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const seen = new Set<string>();
+  const uniqueVerses = verses.filter((v) => (seen.has(v.reference) ? false : (seen.add(v.reference), true)));
+  const said = [...entries].reverse();
+  return (
+    <aside className="j-panel" aria-label="Journal">
+      <div className="j-head">
+        <div className="j-title">Your journal</div>
+        <button className="j-close" onClick={onClose} aria-label="Close journal">&times;</button>
+      </div>
+      <p className="j-lead">
+        A place to look back. It lives on this device only, and nothing goes in it unless you say so.
+      </p>
+
+      <section className="j-section">
+        <h2 className="j-h">What I&rsquo;m noticing</h2>
+        {journal.items.length === 0 ? (
+          <p className="j-empty">
+            Nothing kept yet. When I offer a guess, you can keep it, say it in your own words, or drop it.
+            Kept guesses will be here.
+          </p>
+        ) : (
+          journal.items.map((x) => (
+            <div className="j-card" key={x.id}>
+              <div className="j-tag">{x.status === 'edited' ? 'In your words' : 'A guess you kept'}</div>
+              {editId === x.id ? (
+                <>
+                  <textarea className="j-edit-box" rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} />
+                  <div className="j-row">
+                    <button className="btn btn-accept" disabled={!draft.trim()}
+                            onClick={() => { onEdit(x.id, draft.trim()); setEditId(null); }}>Save</button>
+                    <button className="btn btn-ghost" onClick={() => setEditId(null)}>Cancel</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="j-body">{x.body}</p>
+                  {x.quotes.length > 0 && (
+                    <details className="j-why">
+                      <summary>Because you said</summary>
+                      {x.quotes.map((q, i) => <p className="quote" key={i}>{q}</p>)}
+                    </details>
+                  )}
+                  <div className="j-row">
+                    <button className="j-link" onClick={() => { setEditId(x.id); setDraft(x.body); }}>Edit</button>
+                    <button className="j-link" onClick={() => onRemove(x.id)}>Remove</button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))
+        )}
+      </section>
+
+      <section className="j-section">
+        <h2 className="j-h">In your words</h2>
+        {said.length === 0 ? (
+          <p className="j-empty">What you write will collect here, newest first.</p>
+        ) : (
+          <ul className="j-list">
+            {said.map((e) => (
+              <li key={e.id}>
+                <span className="j-time">
+                  {e.createdAt ? new Date(e.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}
+                </span>
+                <span>{e.text}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {uniqueVerses.length > 0 && (
+        <section className="j-section">
+          <h2 className="j-h">Passages we looked at</h2>
+          <ul className="j-list">
+            {uniqueVerses.map((v) => (
+              <li key={v.reference}>
+                <span>{v.reference} ({v.version}) </span>
+                {v.link && <a className="j-link" href={v.link} target="_blank" rel="noreferrer">Read on YouVersion</a>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div className="j-foot">
+        <button className="j-link" onClick={() => { if (window.confirm('Erase this conversation and your journal from this device?')) onClear(); }}>Clear this device</button>
+        <span className="j-foot-note">Erases the conversation and this journal.</span>
+      </div>
+    </aside>
   );
 }
 

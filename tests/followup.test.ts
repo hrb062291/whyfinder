@@ -338,3 +338,85 @@ describe('the live-run findings', () => {
     expect(r.output.kind).toBe('question');
   });
 });
+
+describe('guesses are spaced out', () => {
+  const GOOD = JSON.stringify({
+    body: 'Both the shed and the billing system involve working something out alongside someone. Worth exploring whether that matters?',
+    evidence: ['e1', 'e2'], concreteNouns: ['shed', 'billing system'], kind: 'ai_inference',
+  });
+  const MSGS = [
+    'I spent most of Saturday rewiring the shed with my neighbour Tom and lost track of time.',
+    'At work people keep coming to me to explain the billing system, and I do not mind it.',
+    'Last week I helped my sister move and organised all the boxes by room.',
+    'On Sunday I fixed the fence with my dad and we talked the whole time.',
+    'This morning I showed a new hire how the invoices work and enjoyed it.',
+    'Yesterday I built a bookshelf for the church library with two friends.',
+    'Tonight I am helping Tom plan the garden beds.',
+    'Then I will tidy the garage so we can start building.',
+  ];
+
+  it('waits at least three messages between guesses', async () => {
+    const deps = { turn: { provider: fixtureProvider([GOOD]), systemPrompt: 'X', thirdPartyNames: [] } };
+    let s: any = newSession('u', 's');
+    const counts: number[] = [];
+    for (const m of MSGS) {
+      const r = await takeConversationTurn(s, m, deps as any);
+      s = r.state;
+      counts.push(s.synthesesOffered.length);
+    }
+    // Every time the count goes up, at least three messages have passed since the last rise.
+    let lastRise = 0;
+    let rises = 0;
+    counts.forEach((c, i) => {
+      if (c > (counts[i - 1] ?? 0)) {
+        if (rises > 0) expect(i + 1 - lastRise).toBeGreaterThanOrEqual(3);
+        lastRise = i + 1;
+        rises += 1;
+      }
+    });
+    expect(rises).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('after the support card', () => {
+  const paused = () => ({ ...newSession('u', 's'), entries: [{ id: 'e1', text: 'I feel anxious about everything', source: 'answer' }], support: { score: 3, shown: true, active: true } }) as any;
+
+  it('uses a real follow-up instead of the stock line while paused', async () => {
+    const r = await takeConversationTurn(paused(), 'my friends and I barely talk anymore',
+      { turn: turnDeps, live: fixtureProvider(['It sounds like the friendships have shifted.', 'What changed with your friends?']) });
+    expect((r.output as { text: string }).text).toBe('What changed with your friends?');
+    expect((r.output as { questionId: string }).questionId).toBe('support');
+  });
+
+  it('falls back to the stock line when the model has nothing', async () => {
+    const r = await takeConversationTurn(paused(), 'ok', { turn: turnDeps, live: fixtureProvider(['NONE']) });
+    expect((r.output as { text: string }).text).toContain('I am listening');
+  });
+
+  it('a faith answer while paused ends with a real prompt, not the stock line', async () => {
+    const answer = JSON.stringify({
+      body: 'Scripture speaks to worry directly. One reading is that naming it is a practice.',
+      kind: 'biblical_teaching', scripture: ['Philippians 4:6-7'],
+      questionsToConsider: ['What is one worry you could say aloud?', 'Who could you tell?'],
+      counsel: ['A pastor or trusted friend'],
+    });
+    const r = await takeConversationTurn(paused(), 'what does the bible say about anxiety',
+      { turn: turnDeps, live: fixtureProvider([answer]) });
+    expect(r.output.answer?.scripture).toEqual(['Philippians 4:6-7']);
+    expect((r.output as { text: string }).text).toBe(AFTER_ANSWER);
+  });
+
+  it('a mild message with a real answer carries no stock care line', async () => {
+    const answer = JSON.stringify({
+      body: 'One reading is that these friendships have shifted. It may be worth asking what a mutual friendship looks like now.',
+      kind: 'christian_interpretation', scripture: ['Proverbs 27:17'],
+      questionsToConsider: ['What would change?', 'Who feels mutual?'],
+      counsel: ['A pastor or trusted friend'],
+    });
+    const s = { ...newSession('u', 's'), entries: [{ id: 'e1', text: 'my friends drain me', source: 'answer' }] } as any;
+    const r = await takeConversationTurn(s, "I'm feeling lost and you're not giving me any direction",
+      { turn: turnDeps, live: fixtureProvider([answer]) });
+    expect(r.output.answer?.scripture).toEqual(['Proverbs 27:17']);
+    expect(r.output.care).toBeUndefined();
+  });
+});
