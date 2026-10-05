@@ -18,7 +18,7 @@ import { careFor, concernTier, type Care } from '../constraints/concernTier.js';
 import { filterProse } from '../constraints/proseFilter.js';
 import { nextQuestion, recordServed } from '../constraints/questionGate.js';
 import {
-  SUPPORT_CHECKIN, SUPPORT_CONTINUE, TENDER_LINE, evaluateSupport, isThin, isTender, saysNothingYet, strainWeight, supportCard,
+  ABOUT_APP_REPLY, SUPPORT_CHECKIN, SUPPORT_CONTINUE, asksAboutApp, wantsQuestionsBack, TENDER_LINE, evaluateSupport, isThin, isTender, saysNothingYet, strainWeight, supportCard,
   type SupportCard, type SupportState,
 } from '../constraints/support.js';
 import { QUESTIONS } from '../content/questions.js';
@@ -47,6 +47,8 @@ export interface FaithAnswer {
   counsel: string[];
   /** Real verse text from YouVersion, when configured. Never written by the model. */
   passages?: Passage[];
+  /** Why the model's answer was rejected. Set only on the fallback. Never shown. */
+  dropped?: string;
 }
 
 export type ConversationOutput = TurnOutput & {
@@ -88,6 +90,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Name something specific they just told you, in their own words, so they feel heard.
 - If something they said EARLIER connects to it, you may set the two side by side as a question, using their own words: "Earlier you mentioned the billing system; does explaining things come up here too?" Never say one caused the other.
 - Warm and plain, like a thoughtful friend. No advice, no diagnosis, no explaining why they feel or act this way.
+- Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic ("that sounds heavy").
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
 - Only if the message is empty of anything concrete, reply with exactly: NONE
@@ -114,6 +117,7 @@ Aim the question at ${aim}
 
 - Use one of their own words for the thing you are asking about.
 - Open-ended: it should invite a sentence or two, not yes or no.
+- Sound natural. Do not recite their earlier words back in quotation marks; refer to them lightly, the way a person would.
 - Under 140 characters. One question mark. No advice and no explanation.
 - Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God unless they did.
 - If their message has nothing concrete to ask about, reply with exactly: NONE
@@ -159,19 +163,46 @@ const HELP_REQUEST =
   /\b(?:i need (?:some )?help|need (?:some )?help|can you help|help me|how (?:can|do|should) i|what (?:can|should) i do|what do i do)\b/i;
 const GROWTH_OR_DIRECTION =
   /\b(?:better person|become|grow|growth|change|direction|path|decision|decide|forgive|forgiveness|trust|faith|god|pray|prayer|calling|career|job|relationship|marriage|habits?|life)\b/i;
+/** "Explain…", "tell me…", "what does the Bible say…" asked as an instruction. */
+const EXPLAIN_REQUEST =
+  /\b(?:explain|tell me|teach me|help me understand|what does the bible say|what do christians (?:believe|think))\b/i;
+/** "Who is God to me" with no question mark: a direct question about God or faith. */
+const DIRECT_FAITH_QUESTION =
+  /^(?:who|what|how|why) (?:is|are|was|does|do|should|can) (?:god|jesus|christ|the bible|prayer|faith|the holy spirit)\b/i;
 
 /**
  * The person is asking the app something, rather than answering a question.
- * Either a real question about faith or direction, or a plain request for help
- * with it ("I need help on how I can become a better person"). A request that
- * comes with signs of strain is not routed here: the support path handles it.
+ * Real questions about faith or direction (even when the question word is not
+ * first, or the question mark is missing), instructions like "explain…", and
+ * plain requests for help ("I need help on how I can become a better person").
+ * Anything with signs of strain is not routed here: the support path handles it.
  */
-export function isAskingUs(text: string): boolean {
+/** "Give me direction", "you're not giving me any guidance": a plain ask for direction. */
+const DIRECTION_ASK =
+  /\b(?:give me (?:some |any )?(?:direction|guidance)|(?:not|n'?t) giving me (?:any )?(?:direction|guidance|answers?|advice)|need (?:some )?(?:direction|guidance)|where do i (?:start|begin)|(?:any|some) (?:direction|guidance))\b/i;
+
+const SHORT_DIRECTION =
+  /^(?:so |ok |okay )?(?:what (?:should|can|do) i do(?: now| then)?|what now|help me|help|where do i (?:start|begin)|what next)\W*$/i;
+
+export function isAskingUs(text: string, hasContext = false): boolean {
   const t = text.trim().replace(/^[\s"'“”‘’]+|[\s"'“”‘’\\]+$/g, '');
+  // A short plea ("what should I do", "help") after the person has said something
+  // is a request for direction, and it is answered with that context.
+  if (hasContext && SHORT_DIRECTION.test(t)) return true;
   if (t.split(/\s+/).length < 4) return false;
-  if (t.includes('?') && INTERROGATIVE.test(t) && FAITH_OR_DIRECTION.test(t)) return true;
-  return HELP_REQUEST.test(t) && GROWTH_OR_DIRECTION.test(t) && strainWeight(t) === 0;
+  const strained = strainWeight(t) > 0;
+  const sentences = t.split(/(?<=[.?!])\s+/).map((x) => x.trim());
+  if (t.includes('?') && sentences.some((x) => INTERROGATIVE.test(x)) && FAITH_OR_DIRECTION.test(t)) return true;
+  // Asking for direction is a question for us even when the person is struggling.
+  if (DIRECTION_ASK.test(t)) return true;
+  if (strained) return false;
+  if (EXPLAIN_REQUEST.test(t) && FAITH_OR_DIRECTION.test(t)) return true;
+  if (DIRECT_FAITH_QUESTION.test(t)) return true;
+  return HELP_REQUEST.test(t) && GROWTH_OR_DIRECTION.test(t);
 }
+
+/** Said under a faith answer when the last question was a follow-up, not a bank question. */
+export const AFTER_ANSWER = 'What stands out to you in that? We can keep going from there.';
 
 export const ANSWER_FALLBACK =
   'That is a question worth taking to a pastor or a mentor you trust. Christians differ on it, and I would not want to speak for God. We can pick up where we were whenever you like.';
@@ -235,37 +266,53 @@ export async function generateFollowUp(
   return used ? raw : null;
 }
 
+export async function generateAnswerDetailed(
+  live: ModelProvider, question: string, entries: { text: string }[],
+): Promise<{ answer: FaithAnswer | null; reason: string | null }> {
+  const system = answerPrompt(entries);
+  const attempt = async (messages: { role: 'user' | 'assistant'; content: string }[]) => {
+    const raw = await live.complete(messages, system);
+    const fail = (why: string) => {
+      console.warn('[whyfinder] answer dropped:', why, '| raw:', raw.slice(0, 400));
+      return { answer: null as FaithAnswer | null, reason: why };
+    };
+    const obj = parseJson(raw);
+    if (!obj || typeof obj.body !== 'string') return fail('not valid JSON');
+    const kind = obj.kind as StatementKind;
+    if (!STATEMENT_KINDS.includes(kind)) return fail(`bad kind: ${String(obj.kind)}`);
+    const answer: FaithAnswer = {
+      body: obj.body,
+      kind,
+      scripture: strings(obj.scripture, 4),
+      questionsToConsider: strings(obj.questionsToConsider, 3),
+      counsel: strings(obj.counsel, 2),
+    };
+    // Judge everything the person will read, not just the body. The default
+    // 900-character cap is for replies; an answer carries more.
+    const all = [answer.body, ...answer.questionsToConsider, ...answer.counsel].join(' ');
+    const verdict = filterProse(all, { maxChars: 2000 });
+    if (!verdict.pass) return fail(`filter: ${verdict.violations.join(', ')}`);
+    // An answer with no way forward is just a verdict.
+    if (answer.questionsToConsider.length === 0 || answer.counsel.length === 0) {
+      return fail('no questions or no counsel');
+    }
+    return { answer, reason: null as string | null };
+  };
+
+  const first = await attempt([{ role: 'user', content: question }]);
+  if (first.answer) return first;
+  // One more try, told what went wrong. The same filter judges the second one.
+  return attempt([{
+    role: 'user',
+    content: `${question}\n\n(Your last reply was rejected: ${first.reason}. Reply again with ONLY the JSON object, fixing that. ` +
+      'Keep "body" short, include 2 or 3 questionsToConsider and 1 or 2 counsel entries, and follow every rule.)',
+  }]);
+}
+
 export async function generateAnswer(
   live: ModelProvider, question: string, entries: { text: string }[],
 ): Promise<FaithAnswer | null> {
-  const raw = await live.complete([{ role: 'user', content: question }], answerPrompt(entries));
-  const drop = (why: string): null => {
-    console.warn('[whyfinder] answer dropped:', why, '| raw:', raw.slice(0, 400));
-    return null;
-  };
-  const obj = parseJson(raw);
-  if (!obj || typeof obj.body !== 'string') return drop('not valid JSON');
-  const kind = obj.kind as StatementKind;
-  if (!STATEMENT_KINDS.includes(kind)) return drop(`bad kind: ${String(obj.kind)}`);
-
-  const answer: FaithAnswer = {
-    body: obj.body,
-    kind,
-    scripture: strings(obj.scripture, 4),
-    questionsToConsider: strings(obj.questionsToConsider, 3),
-    counsel: strings(obj.counsel, 2),
-  };
-  // Judge everything the person will read, not just the body.
-  const all = [answer.body, ...answer.questionsToConsider, ...answer.counsel].join(' ');
-  // The default 900-character cap is for replies. An answer carries a body, two
-  // or three questions and a counsel line, so it gets more room.
-  const verdict = filterProse(all, { maxChars: 2000 });
-  if (!verdict.pass) return drop(`filter: ${verdict.violations.join(', ')}`);
-  // An answer with no way forward is just a verdict.
-  if (answer.questionsToConsider.length === 0 || answer.counsel.length === 0) {
-    return drop('no questions or no counsel');
-  }
-  return answer;
+  return (await generateAnswerDetailed(live, question, entries)).answer;
 }
 
 // ------------------------------------------------------------------ the turn
@@ -310,14 +357,39 @@ export async function takeConversationTurn(
   const paused = phase >= 2 && Boolean(ev.next?.active);
   const checkin = ev.showCard ? SUPPORT_CHECKIN : SUPPORT_CONTINUE;
 
+  // Typing "back to the questions" works like the button. Not recorded as an entry.
+  if (phase >= 2 && tier === 'none' && wantsQuestionsBack(text) && (s.support?.active || s.entries.length > 0)) {
+    return resumeQuestions(s, now);
+  }
+
+  // "What is the point of you?" gets a plain, fixed answer. No model call.
+  if (phase >= 2 && (tier === 'none' || tier === 'mild') && asksAboutApp(text)) {
+    const asked = s.currentQuestionId;
+    const repeatable = !asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked);
+    const q = currentQuestion(s);
+    return {
+      state: { ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }) },
+      output: {
+        kind: 'question',
+        text: paused ? checkin : repeatable ? q.text : 'What would you like to bring to it?',
+        questionId: paused ? 'support' : repeatable ? q.id : 'followup',
+        reply: ABOUT_APP_REPLY,
+      },
+    };
+  }
+
   // Faith Q&A. Not an answer to the bank, so it is not recorded as an entry and
   // does not advance the question gate. Acute and elevated skip it entirely.
-  if (phase >= 2 && live && (tier === 'none' || tier === 'mild') && isAskingUs(text)) {
+  if (phase >= 2 && live && (tier === 'none' || tier === 'mild') && isAskingUs(text, s.entries.length > 0)) {
     let answer: FaithAnswer | null = null;
+    let droppedWhy = 'no answer';
     try {
-      answer = await generateAnswer(live, text, s.entries);
+      const d = await generateAnswerDetailed(live, text, s.entries);
+      answer = d.answer;
+      if (d.reason) droppedWhy = d.reason;
     } catch (e) {
-      console.warn('[whyfinder] answer threw:', e instanceof Error ? e.message : String(e));
+      droppedWhy = `threw: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+      console.warn('[whyfinder] answer threw:', droppedWhy);
       answer = null;
     }
     if (answer && deps.scripture && answer.scripture.length > 0) {
@@ -325,16 +397,21 @@ export async function takeConversationTurn(
       if (passages.length > 0) answer = { ...answer, passages };
     }
     const q = currentQuestion(s);
+    // Only repeat the question the person was last asked if it is a real bank
+    // question or the opening. After a follow-up, a gentle line is better than
+    // repeating "Tell me what has been on your mind lately."
+    const asked = s.currentQuestionId;
+    const repeatable = !asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked);
     const care = (ev.showCard && tier === 'mild' ? null : careFor(tier)) ?? undefined;
     return {
-      state: { ...s, support: ev.next },
+      state: { ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }) },
       output: {
         kind: 'question',
-        text: paused ? checkin : q.text,
-        questionId: paused ? 'support' : q.id,
+        text: paused ? checkin : repeatable ? q.text : AFTER_ANSWER,
+        questionId: paused ? 'support' : repeatable ? q.id : 'followup',
         care,
         support: ev.showCard ? supportCard(tier) : undefined,
-        answer: answer ?? { body: ANSWER_FALLBACK, kind: 'ai_inference', scripture: [], questionsToConsider: [], counsel: [] },
+        answer: answer ?? { body: ANSWER_FALLBACK, kind: 'ai_inference', scripture: [], questionsToConsider: [], counsel: [], dropped: droppedWhy },
       },
     };
   }
@@ -342,7 +419,7 @@ export async function takeConversationTurn(
   // Start the reply alongside the turn. It only needs what the person has said.
   const heard = [...s.entries, { text }];
   const replyP: Promise<string | null> =
-    phase >= 2 && live && tier === 'none'
+    phase >= 2 && live && (tier === 'none' || tier === 'mild')
       ? generateReply(live, heard).catch(() => null)
       : Promise.resolve(null);
 
@@ -354,7 +431,7 @@ export async function takeConversationTurn(
   const tender = tenderNow || (phase >= 2 && !paused && (s.tenderLeft ?? 0) > 0);
   const tenderLeft = tenderNow ? 2 : Math.max(0, (s.tenderLeft ?? 0) - 1);
   const followP: Promise<string | null> =
-    phase >= 2 && live && tier === 'none' && !paused && !isThin(text)
+    phase >= 2 && live && (tier === 'none' || tier === 'mild') && !paused && !isThin(text)
       && (tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
       ? generateFollowUp(live, heard).catch(() => null)
       : Promise.resolve(null);
@@ -447,6 +524,13 @@ export async function takeConversationTurn(
       if (kept) output.reply = kept; else delete output.reply;
     }
     state = { ...state, followStreak: 0 };
+  }
+
+  // A real, specific reply beats the canned acknowledgement. The canned line
+  // stays only when the model gave us nothing (and the support card, when shown,
+  // already points to people).
+  if (tier === 'mild' && (output.reply || (output as { questionId?: string }).questionId === 'followup')) {
+    delete output.care;
   }
 
   // One experiment per session, after the first synthesis is shown, and never

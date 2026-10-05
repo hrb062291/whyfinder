@@ -45,7 +45,7 @@ export function emptySupport(): SupportState {
 
 /** Language of strain, in the person's own register. Weight 2. */
 const STRONG: RegExp[] = [
-  /\banxi(?:ety|ous)\b/i,
+  /\banxi\w*/i,
   /\bpanic(?:king|ked| attacks?)?\b/i,
   /\bdepress(?:ed|ion|ing)\b/i,
   /\bcan'?t (?:cope|breathe|sleep|focus|stop worrying|handle (?:this|it|anything))\b/i,
@@ -59,6 +59,7 @@ const SOFT: RegExp[] = [
   /\bstress(?:ed|ful)?\b/i,
   /\bworr(?:y|ied|ying)\b/i,
   /\blonely\b/i,
+  /\blost\b/i,
   /\bscared\b/i,
   /\boverwhelm(?:ed|ing)?\b/i,
   /\bprocrastinat\w*/i,
@@ -77,12 +78,25 @@ const HELP: RegExp[] = [
   /\bcan'?t do this\b/i,
 ];
 
+const FIRST_PERSON = /\b(?:i|i'?m|i’m|i'?ve|i’ve|i'?d|my|me|myself|we|our|mine)\b/i;
+const QUESTION_OPENER =
+  /^(?:what|how|why|who|where|when|does|do|is|are|can|should|explain|tell me|teach me)\b/i;
+
+/** A general question or request that never mentions the person themselves. */
+export function isInformational(text: string): boolean {
+  const t = text.trim().replace(/^[\s"'“”‘’]+/, '');
+  return QUESTION_OPENER.test(t) && !FIRST_PERSON.test(t);
+}
+
 /**
  * The weight one message adds. Pure, and never returns the matched words.
  * Asking for help on its own ("what can I do about my job?") adds nothing,
  * because that is an ordinary question. It only counts next to real strain.
  */
 export function strainWeight(text: string, prior = 0): number {
+  // "What does the Bible say about anxiety?" asks about a topic. It says nothing
+  // about how this person is doing, so it adds no weight.
+  if (isInformational(text)) return 0;
   const strong = STRONG.some((re) => re.test(text));
   const soft = SOFT.some((re) => re.test(text));
   let w = strong ? 2 : soft ? 1 : 0;
@@ -102,7 +116,7 @@ export function evaluateSupport(
   const p = prev ?? emptySupport();
   const w = tier === 'elevated'
     ? SUPPORT_THRESHOLD
-    : Math.max(strainWeight(text, p.score), tier === 'mild' ? 1 : 0);
+    : Math.max(strainWeight(text, p.score), tier === 'mild' ? 0.5 : 0);
   const score = p.score + w;
   const showCard = !p.shown && score >= SUPPORT_THRESHOLD;
   return {
@@ -208,9 +222,40 @@ export function isThin(text: string): boolean {
  * The model is told to say when nothing real has surfaced. That honesty is right,
  * but it must not be dressed as a guess with a "Keep this" button.
  */
-const NOTHING_YET =
-  /\b(?:nothing|not much)\b[^.]{0,40}\bsurfaced\b|\bwon'?t (?:guess|offer a pattern)\b|\btoo (?:early|soon) to (?:say|guess)\b/i;
+const NOTHING_YET = new RegExp(
+  [
+    "\\b(?:nothing|not much|little|not enough)\\b[^.]{0,50}\\b(?:surfaced|emerged|to go on|to work with|to name|to say)\\b",
+    "\\bwon'?t (?:guess|offer a pattern|name a pattern|invent)\\b",
+    "\\b(?:too|still) (?:early|soon) to (?:say|guess|name|see)\\b",
+    "\\bno (?:clear|real) pattern\\b",
+    "\\bdon'?t want to invent a pattern\\b",
+  ].join('|'),
+  'i',
+);
 
 export function saysNothingYet(body: string): boolean {
   return NOTHING_YET.test(body);
 }
+
+// ------------------------------------------------------------------ typed "back to the questions"
+
+/** Typing it works as well as the button. */
+const RESUME =
+  /^(?:(?:ok|okay|yes|yeah|sure|alright)[,.!\s]*)?(?:(?:let'?s |lets )?(?:go )?back to (?:the )?questions?|(?:let'?s |lets )?(?:continue|resume|keep going)|(?:the )?next question|i'?m (?:ok|okay|fine|ready)|ready)[.!\s]*$/i;
+
+export function wantsQuestionsBack(text: string): boolean {
+  return RESUME.test(text.trim());
+}
+
+// ------------------------------------------------------------------ "what is the point of you"
+
+const ASKS_ABOUT_APP =
+  /\b(?:point of (?:you|this|whyfinder)|what are you|who are you|what is (?:this|whyfinder)|what do you do|how do you work|are you (?:a |an )?(?:real|human|ai|bot|robot|person|therapist|counselor|pastor)|what is this (?:app|for))\b/i;
+
+export function asksAboutApp(text: string): boolean {
+  return ASKS_ABOUT_APP.test(text);
+}
+
+/** Fixed text. Said plainly, and never routed through a model. */
+export const ABOUT_APP_REPLY =
+  'Fair question. I am a tool for thinking out loud: I ask questions, remember what you say in this conversation, and sometimes offer a guess about a pattern for you to keep or throw away. I am not a counselor, a pastor or a friend, and I do not know what God intends for you.';

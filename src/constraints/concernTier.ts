@@ -30,6 +30,8 @@ const ELEVATED: RegExp[] = [
   /\b(?:don'?t|didn'?t|do not|did not|no longer|never) (?:really )?want(?:ed)? to (?:keep going|go on|be here|live|exist|wake up|be alive)\b/i,
   /\bcan'?t (?:keep going|go on|do this anymore)\b/i,
   /\b(?:better|easier) (?:off )?without me\b/i,
+  /\b(?:don'?t|do not|can'?t|cannot|no longer) see (?:the |any )?point (?:of|in) (?:going on|living|life|continuing|being here|anything)\b/i,
+  /\bno point (?:in )?(?:going on|living|being here|anymore)\b/i,
   /\bwish i (?:wasn'?t|were not|weren'?t) (?:here|alive|born)\b/i,
 ];
 

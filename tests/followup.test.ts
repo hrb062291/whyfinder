@@ -66,7 +66,7 @@ describe('follow-ups in the conversation', () => {
 
 import { BANNED_DISTRESS_CLAIMS } from '../src/config/patterns.js';
 import { TENDER_LINE, isTender } from '../src/constraints/support.js';
-import { isAskingUs, withoutQuestion } from '../src/engine/conversation.js';
+import { AFTER_ANSWER, isAskingUs, withoutQuestion } from '../src/engine/conversation.js';
 
 describe('staying with what they said', () => {
   const REAL1 = 'I spent Saturday rewiring the shed with Tom.';
@@ -161,5 +161,180 @@ describe('help requests and lingering tenderness', () => {
     r = await takeConversationTurn(r.state, 'I think so', live());
     expect(['followup', 'tender']).toContain((r.output as { questionId: string }).questionId);
     expect(r.state.tenderLeft).toBe(0);
+  });
+});
+
+describe('direct questions are answered', () => {
+  it.each([
+    'EXPLAIN TO ME WHO GOD IS TO A PERSON. Hhow should i see god in my life?',
+    'Who is god to me',
+    'Tell me what the Bible says about forgiveness',
+    'How do I know what God wants me to do with my job?',
+  ])('asks us: %s', (q) => expect(isAskingUs(q)).toBe(true));
+
+  it.each([
+    'When I was a kid we went to church every Sunday',
+    'What I enjoy most is rewiring things with Tom',
+    'idk. I need advice',
+    'I have extreme anxiety and I dont know what I can do to deal with it',
+  ])('does not hijack an ordinary answer: %s', (q) => expect(isAskingUs(q)).toBe(false));
+});
+
+import { saysNothingYet } from '../src/constraints/support.js';
+describe('a guess that admits it has nothing is not a card', () => {
+  it.each([
+    'Not enough has surfaced yet for me to name a pattern, only a question about who God is to you.',
+    'Not much has surfaced yet, so I will not guess.',
+    "It's too early to say what connects these.",
+    'There is no clear pattern yet.',
+  ])('%s', (b) => expect(saysNothingYet(b)).toBe(true));
+  it('keeps a real guess', () => {
+    expect(saysNothingYet('Both the shed and the billing system involve working something out alongside someone.')).toBe(false);
+  });
+});
+
+describe('after a faith answer', () => {
+  const answer = JSON.stringify({
+    body: 'The Bible describes forgiveness as offered by God and asked of people. It may be worth weighing slowly.',
+    kind: 'biblical_teaching', scripture: ['Ephesians 4:32'],
+    questionsToConsider: ['Who comes to mind?', 'What might it cost?'],
+    counsel: ['A pastor'],
+  });
+  it('does not repeat the opening line when the last question was a follow-up', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'I spent most of Saturday rewiring the shed with Tom.',
+      { turn: turnDeps, live: fixtureProvider(['Nice.', 'What did the rewiring involve?']) });
+    expect((r.output as { questionId: string }).questionId).toBe('followup');
+    r = await takeConversationTurn(r.state, 'Tell me what the Bible says about forgiveness',
+      { turn: turnDeps, live: fixtureProvider([answer]) });
+    expect(r.output.answer?.scripture).toEqual(['Ephesians 4:32']);
+    expect((r.output as { text: string }).text).toBe(AFTER_ANSWER);
+    expect(r.state.entries).toHaveLength(1);
+  });
+  it('still repeats the opening if the very first message was the question', async () => {
+    const r = await takeConversationTurn(newSession('u', 's'), 'Tell me what the Bible says about forgiveness',
+      { turn: turnDeps, live: fixtureProvider([answer]) });
+    expect((r.output as { text: string }).text).not.toBe(AFTER_ANSWER);
+  });
+});
+
+import { ABOUT_APP_REPLY, asksAboutApp, isInformational, strainWeight as sw, wantsQuestionsBack } from '../src/constraints/support.js';
+
+describe('questions about a topic are not personal strain', () => {
+  it('does not count "what does god say about anxiety"', () => {
+    expect(isInformational('what does god say about anxiety')).toBe(true);
+    expect(sw('what does god say about anxiety')).toBe(0);
+    expect(isAskingUs('what does god say about anxiety')).toBe(true);
+    expect(isAskingUs('what does the bible say about anxiety')).toBe(true);
+  });
+  it('still counts first-person strain', () => {
+    expect(sw('I have so much anxiety')).toBe(2);
+    expect(sw('how do I cope with my anxiety')).toBeGreaterThan(0);
+  });
+  it('does not show the card for the real transcript', async () => {
+    let s = newSession('u', 's1') as any;
+    const deps = { turn: turnDeps, phase: 3 };
+    for (const t of ['what does god say about anxiety', 'just have been overwhelmed with school work and work']) {
+      const r = await takeConversationTurn(s, t, deps as any);
+      expect(r.output.support).toBeUndefined();
+      s = r.state;
+    }
+  });
+});
+
+describe('typed resume and questions about the app', () => {
+  it('recognises typed resume', () => {
+    for (const t of ['back to the questions', 'ok back to the questions', 'continue', 'ready']) {
+      expect(wantsQuestionsBack(t)).toBe(true);
+    }
+    expect(wantsQuestionsBack('back to the questions about my dad being sick')).toBe(false);
+  });
+  it('resumes the bank when paused', async () => {
+    let s: any = newSession('u', 's2');
+    s = { ...s, support: { score: 3, shown: true, active: true } };
+    const r = await takeConversationTurn(s, 'back to the questions', { turn: turnDeps, phase: 3 } as any);
+    expect(r.state.support?.active).toBe(false);
+    expect((r.output as { questionId?: string }).questionId).not.toBe('support');
+  });
+  it('answers "what is the point of you" plainly', async () => {
+    expect(asksAboutApp('what is the point of you')).toBe(true);
+    const s: any = newSession('u', 's3');
+    const r = await takeConversationTurn(s, 'what is the point of you', { turn: turnDeps, phase: 3 } as any);
+    expect(r.output.reply).toBe(ABOUT_APP_REPLY);
+  });
+});
+
+describe('the third transcript: lost with friends, asking for direction', () => {
+  it('a mild message still gets a real reply and a follow-up, not canned lines', async () => {
+    const r = await takeConversationTurn(newSession('u', 's'),
+      'im feeling extremely lost with my freinds. We just do different things and drain each others energy',
+      { turn: turnDeps, live: fixtureProvider(['Drifting into separate routines while still draining each other is a hard combination.', 'When you do get together, what tends to drain you most?']) });
+    const o = r.output as { text: string; questionId: string; care?: unknown };
+    expect(o.questionId).toBe('followup');
+    expect(o.text).toContain('drain');
+    expect(o.care).toBeUndefined();
+  });
+
+  it('"you are not giving me any direction" is answered', () => {
+    expect(isAskingUs("yes it's very urgent. I'm feeling lost and you're not giving me any direction")).toBe(true);
+    expect(isAskingUs('Can you give me some direction')).toBe(true);
+    expect(isAskingUs('idk. I need advice')).toBe(false);
+  });
+
+  it('mild messages alone do not pile up into the support card', async () => {
+    let s: any = newSession('u', 's');
+    for (const t of ['feeling kind of stuck today', 'a bit stuck still', 'stuck on what to do next']) {
+      const r = await takeConversationTurn(s, t, { turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
+      s = r.state;
+    }
+    expect(s.support?.shown).toBeFalsy();
+  });
+
+  it('typos of anxious still count as strain', () => {
+    expect(sw('I was feeling extemely anxius')).toBe(2);
+  });
+});
+
+import { generateAnswerDetailed } from '../src/engine/conversation.js';
+import { concernTier } from '../src/constraints/concernTier.js';
+
+describe('the live-run findings', () => {
+  const good = JSON.stringify({
+    body: 'Scripture speaks to worry directly. One reading is that naming it and handing it to God is a practice, not a one-time fix.',
+    kind: 'biblical_teaching', scripture: ['Philippians 4:6-7'],
+    questionsToConsider: ['What is one worry you could say out loud this week?', 'Who could you tell?'],
+    counsel: ['A doctor or licensed counselor', 'A pastor or trusted friend'],
+  });
+
+  it('retries once when the first answer is rejected, and says why', async () => {
+    const live = fixtureProvider(['not json at all', good]);
+    const d = await generateAnswerDetailed(live, 'what does the bible say about anxiety', []);
+    expect(d.answer?.scripture).toEqual(['Philippians 4:6-7']);
+  });
+
+  it('reports the reason when both tries fail', async () => {
+    const d = await generateAnswerDetailed(fixtureProvider(['nope']), 'q', []);
+    expect(d.answer).toBeNull();
+    expect(d.reason).toBe('not valid JSON');
+  });
+
+  it('puts the reason on the fallback answer', async () => {
+    const r = await takeConversationTurn(newSession('u', 's'), 'what does the bible say about forgiveness',
+      { turn: turnDeps, live: fixtureProvider(['nope']) });
+    expect(r.output.answer?.dropped).toBe('not valid JSON');
+  });
+
+  it('"I do not see the point of going on anymore" is elevated', () => {
+    expect(concernTier('I do not see the point of going on anymore').tier).toBe('elevated');
+    expect(concernTier("I can't see the point in living").tier).toBe('elevated');
+  });
+
+  it('a short plea after context is answered, and typed resume works without a pause', async () => {
+    expect(isAskingUs('what should I do')).toBe(false);
+    expect(isAskingUs('what should I do', true)).toBe(true);
+    expect(isAskingUs('help', true)).toBe(true);
+    const s: any = { ...newSession('u', 's'), entries: [{ id: 'e1', text: 'I stopped praying', source: 'answer' }] };
+    const r = await takeConversationTurn(s, 'back to the questions', { turn: turnDeps, live: fixtureProvider(['NONE']) });
+    expect((r.output as { questionId?: string }).questionId).not.toBe('followup');
+    expect(r.output.kind).toBe('question');
   });
 });
