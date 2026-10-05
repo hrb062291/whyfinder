@@ -187,7 +187,12 @@ export default function Home() {
       .find((c) => c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent');
     if (bg) root.style.setProperty('--wf-bg', bg);
     const bar = document.querySelector('.topbar') as HTMLElement | null;
-    if (bar) root.style.setProperty('--wf-topbar-h', `${bar.offsetHeight}px`);
+    let ro: ResizeObserver | null = null;
+    if (bar) {
+      const measure = () => root.style.setProperty('--wf-topbar-h', `${bar.offsetHeight}px`);
+      measure();
+      if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(measure); ro.observe(bar); }
+    }
     // Wide screens have room for the journal beside the conversation.
     if (window.matchMedia('(min-width: 1280px)').matches) setPanel(true);
     const saved = loadSaved();

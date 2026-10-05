@@ -84,13 +84,15 @@
 .crisis-link.j-top::before,
 .crisis-link.j-top::after { display: none; }
 
-/* The top bar (Clear this device, Journal, crisis link) stays at the top while scrolling. */
+/* The top bar (Clear this device, Journal, crisis link) stays at the top while scrolling.
+   Fixed rather than sticky: sticky only holds inside its parent, and the page's wrapper
+   can be shorter than the content. The body gets matching padding so nothing hides under it. */
 .topbar {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 50;
   background: var(--wf-bg, var(--bg, var(--background, Canvas)));
 }
-
-.j-actions { display: flex; gap: 8px; margin-bottom: 4px; }
-.j-list li .j-link { align-self: flex-start; }
+body { padding-top: var(--wf-topbar-h, 0px); }
