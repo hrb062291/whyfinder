@@ -129,15 +129,21 @@ type JournalItem = {
   id: string; body: string; original?: string; quotes: string[];
   status: 'kept' | 'edited'; at: number;
 };
-type Journal = { items: JournalItem[]; dropped: string[] };
-const EMPTY_JOURNAL: Journal = { items: [], dropped: [] };
+/** A question from an answer card that the person saved to take to someone. */
+type SavedQuestion = { text: string; at: number };
+type Journal = { items: JournalItem[]; dropped: string[]; questions: SavedQuestion[] };
+const EMPTY_JOURNAL: Journal = { items: [], dropped: [], questions: [] };
 
 function loadJournal(): Journal {
   try {
     const raw = window.localStorage.getItem(JOURNAL_KEY);
     if (!raw) return EMPTY_JOURNAL;
     const v = JSON.parse(raw) as Journal;
-    return { items: Array.isArray(v.items) ? v.items : [], dropped: Array.isArray(v.dropped) ? v.dropped : [] };
+    return {
+      items: Array.isArray(v.items) ? v.items : [],
+      dropped: Array.isArray(v.dropped) ? v.dropped : [],
+      questions: Array.isArray(v.questions) ? v.questions : [],
+    };
   } catch {
     return EMPTY_JOURNAL;
   }
@@ -173,6 +179,15 @@ export default function Home() {
     started.current = true;
     setJournal(loadJournal());
     journalReady.current = true;
+    // The top bar stays put while the page scrolls. It needs the page's own
+    // background colour so the conversation does not show through it, and the
+    // journal panel sits just under it.
+    const root = document.documentElement;
+    const bg = [document.body, root].map((el) => getComputedStyle(el).backgroundColor)
+      .find((c) => c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent');
+    if (bg) root.style.setProperty('--wf-bg', bg);
+    const bar = document.querySelector('.topbar') as HTMLElement | null;
+    if (bar) root.style.setProperty('--wf-topbar-h', `${bar.offsetHeight}px`);
     // Wide screens have room for the journal beside the conversation.
     if (window.matchMedia('(min-width: 1280px)').matches) setPanel(true);
     const saved = loadSaved();
@@ -264,13 +279,22 @@ export default function Home() {
 
   function keepGuess(id: string, body: string, quotes: string[], edited = false, original?: string) {
     setJournal((j) => ({
+      ...j,
       dropped: j.dropped.filter((d) => d !== id),
       items: [...j.items.filter((x) => x.id !== id),
         { id, body, quotes, status: edited ? 'edited' : 'kept', at: Date.now(), ...(edited ? { original } : {}) }],
     }));
   }
   function dropGuess(id: string) {
-    setJournal((j) => ({ items: j.items.filter((x) => x.id !== id), dropped: [...j.dropped.filter((d) => d !== id), id] }));
+    setJournal((j) => ({ ...j, items: j.items.filter((x) => x.id !== id), dropped: [...j.dropped.filter((d) => d !== id), id] }));
+  }
+  function toggleQuestion(text: string) {
+    setJournal((j) => ({
+      ...j,
+      questions: j.questions.some((q) => q.text === text)
+        ? j.questions.filter((q) => q.text !== text)
+        : [...j.questions, { text, at: Date.now() }],
+    }));
   }
   function editKept(id: string, body: string) {
     setJournal((j) => ({
@@ -344,8 +368,8 @@ export default function Home() {
           {(restored || turns.length > 2) && (
             <button className="crisis-link" onClick={startOver}>Clear this device</button>
           )}
-          <button className="crisis-link" onClick={() => setPanel((o) => !o)} aria-expanded={panel}>
-            Journal{journal.items.length > 0 ? ` (${journal.items.length})` : ''}
+          <button className="crisis-link j-top" onClick={() => setPanel((o) => !o)} aria-expanded={panel}>
+            Journal{journal.items.length + journal.questions.length > 0 ? ` (${journal.items.length + journal.questions.length})` : ''}
           </button>
           <button className="crisis-link" onClick={() => setSheet('crisis')}>
             Need to talk to someone now
@@ -375,7 +399,9 @@ export default function Home() {
                   onOpen={() => setPanel(true)}
                 />
               )}
-              {t.kind === 'answer' && <AnswerCard a={t.answer} />}
+              {t.kind === 'answer' && (
+                <AnswerCard a={t.answer} saved={journal.questions.map((q) => q.text)} onSave={toggleQuestion} />
+              )}
               {t.kind === 'support' && (
                 <SupportCardView s={t.support} onResume={() => void resume()}
                                  onResources={() => setSheet('crisis')} />
@@ -437,6 +463,7 @@ export default function Home() {
           onClose={() => setPanel(false)}
           onEdit={editKept}
           onRemove={dropGuess}
+          onRemoveQuestion={toggleQuestion}
           onClear={startOver}
         />
       )}
@@ -548,15 +575,56 @@ function SynthesisCard({ body, quotes, status, onKeep, onEdit, onDrop, onOpen }:
 
 type Verse = { reference: string; versionTitle: string; version: string; link?: string };
 
+/** The journal as plain text. Built here, on this device, only when the person asks. */
+function journalText(journal: Journal, entries: SavedEntry[], verses: Verse[]): string {
+  const when = (t?: string | number) =>
+    t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  const out: string[] = [
+    'WhyFinder journal',
+    `Exported ${when(Date.now())}`,
+    'Kept on this device. WhyFinder is a tool for thinking out loud, not a counselor or pastor.',
+    '',
+    "WHAT I'M NOTICING",
+  ];
+  if (journal.items.length === 0) out.push('(nothing kept yet)');
+  journal.items.forEach((x) => {
+    out.push(`- ${x.body}  [${x.status === 'edited' ? 'in my words' : 'a guess I kept'}]`);
+    x.quotes.forEach((q) => out.push(`    because I said: "${q}"`));
+  });
+  out.push('', 'TO BRING TO SOMEONE');
+  if (journal.questions.length === 0) out.push('(nothing saved yet)');
+  journal.questions.forEach((q) => out.push(`- ${q.text}`));
+  out.push('', 'IN MY WORDS');
+  if (entries.length === 0) out.push('(nothing yet)');
+  entries.forEach((e) => out.push(`[${when(e.createdAt)}] ${e.text}`));
+  if (verses.length > 0) {
+    out.push('', 'PASSAGES WE LOOKED AT');
+    verses.forEach((v) => out.push(`- ${v.reference} (${v.version})${v.link ? ` ${v.link}` : ''}`));
+  }
+  return out.join('\n');
+}
+
+function downloadText(text: string) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  a.download = `whyfinder-journal-${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 /**
  * The journal. Everything here comes from this device: the guesses the person
  * kept (in the words they approved), what they said, and the passages we looked at.
  * Nothing in it is sent anywhere.
  */
-function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onClear }: {
+function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onRemoveQuestion, onClear }: {
   journal: Journal; entries: SavedEntry[]; verses: Verse[];
-  onClose: () => void; onEdit: (id: string, body: string) => void; onRemove: (id: string) => void; onClear: () => void;
+  onClose: () => void; onEdit: (id: string, body: string) => void; onRemove: (id: string) => void;
+  onRemoveQuestion: (text: string) => void; onClear: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const seen = new Set<string>();
@@ -613,6 +681,25 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onC
       </section>
 
       <section className="j-section">
+        <h2 className="j-h">To bring to someone</h2>
+        {journal.questions.length === 0 ? (
+          <p className="j-empty">
+            When an answer ends with questions to sit with, you can save the ones worth taking to a pastor,
+            a counselor or a friend. They will be here.
+          </p>
+        ) : (
+          <ul className="j-list">
+            {journal.questions.map((q) => (
+              <li key={q.text}>
+                <span>{q.text}</span>
+                <button className="j-link" onClick={() => onRemoveQuestion(q.text)}>Remove</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="j-section">
         <h2 className="j-h">In your words</h2>
         {said.length === 0 ? (
           <p className="j-empty">What you write will collect here, newest first.</p>
@@ -645,6 +732,16 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onC
       )}
 
       <div className="j-foot">
+        <div className="j-actions">
+          <button className="btn" onClick={() => {
+            const text = journalText(journal, entries, uniqueVerses);
+            const done = () => { setCopied(true); window.setTimeout(() => setCopied(false), 2000); };
+            if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => downloadText(text));
+            else downloadText(text);
+          }}>{copied ? 'Copied' : 'Copy'}</button>
+          <button className="btn" onClick={() => downloadText(journalText(journal, entries, uniqueVerses))}>Download</button>
+        </div>
+        <span className="j-foot-note">Your journal as plain text, to keep or to bring to someone. Nothing is sent anywhere.</span>
         <button className="j-link" onClick={() => { if (window.confirm('Erase this conversation and your journal from this device?')) onClear(); }}>Clear this device</button>
         <span className="j-foot-note">Erases the conversation and this journal.</span>
       </div>
@@ -652,8 +749,24 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onC
   );
 }
 
+/** Long passages start collapsed. The full text is one tap away. */
+function PassageText({ reference, version, text }: { reference: string; version: string; text: string }) {
+  const LIMIT = 320;
+  const [open, setOpen] = useState(false);
+  const long = text.length > LIMIT;
+  const shown = !long || open ? text : `${text.slice(0, LIMIT).replace(/\s+\S*$/, '')}\u2026`;
+  return (
+    <p className="quote">
+      <strong>{reference}</strong> ({version}) {shown}
+      {long && (
+        <> <button className="j-link" onClick={() => setOpen((o) => !o)}>{open ? 'Show less' : 'Show more'}</button></>
+      )}
+    </p>
+  );
+}
+
 /** A faith answer. Labelled by kind, and it ends in questions and people, not a verdict. */
-function AnswerCard({ a }: { a: Answer }) {
+function AnswerCard({ a, saved, onSave }: { a: Answer; saved: string[]; onSave: (q: string) => void }) {
   return (
     <div className="synthesis">
       <div className="syn-kind">{KIND_LABEL[a.kind] ?? 'A thought to weigh'}</div>
@@ -664,7 +777,7 @@ function AnswerCard({ a }: { a: Answer }) {
           {a.passages && a.passages.length > 0
             ? a.passages.map((p, i) => (
                 <div key={i}>
-                  <p className="quote"><strong>{p.reference}</strong> ({p.version}) {p.text}</p>
+                  <PassageText reference={p.reference} version={p.version} text={p.text} />
                   <p className="reflect-note">{p.versionTitle}. {p.copyright}{p.link ? <> <a href={p.link} target="_blank" rel="noreferrer">Read on YouVersion</a></> : null}</p>
                 </div>
               ))
@@ -674,7 +787,14 @@ function AnswerCard({ a }: { a: Answer }) {
       {a.questionsToConsider.length > 0 && (
         <div className="syn-evidence">
           <div className="syn-evidence-label">Questions to sit with</div>
-          {a.questionsToConsider.map((q, i) => <p className="quote" key={i}>{q}</p>)}
+          {a.questionsToConsider.map((q, i) => (
+            <p className="quote" key={i}>
+              {q}{' '}
+              <button className="j-link" onClick={() => onSave(q)}>
+                {saved.includes(q) ? 'Saved to journal' : 'Save to bring to someone'}
+              </button>
+            </p>
+          ))}
         </div>
       )}
       {a.counsel.length > 0 && (
