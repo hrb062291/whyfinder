@@ -30,6 +30,7 @@ type Turn =
   | { kind: 'app'; text: string }
   | { kind: 'care'; text: string }
   | { kind: 'notice'; text: string }
+  | { kind: 'welcome'; text: string }
   | { kind: 'you'; text: string }
   | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] }
   | { kind: 'answer'; answer: Answer }
@@ -85,6 +86,7 @@ function loadSaved(): Saved | null {
     // A pause from last time should not still be on. Start with the questions available.
     const support = v.state.support as { active?: boolean } | undefined;
     if (support) v.state = { ...v.state, support: { ...support, active: false } };
+    v.turns = v.turns.filter((t) => t.kind !== 'welcome');
     return v;
   } catch {
     return null;
@@ -93,7 +95,7 @@ function loadSaved(): Saved | null {
 
 function save(state: Record<string, unknown>, turns: Turn[]) {
   try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify({ state, turns, at: Date.now() }));
+    window.localStorage.setItem(SAVE_KEY, JSON.stringify({ state, turns: turns.filter((t) => t.kind !== 'welcome'), at: Date.now() }));
   } catch {
     /* Private window or full storage. The conversation still works. */
   }
@@ -131,7 +133,7 @@ export default function Home() {
     const saved = loadSaved();
     if (saved) {
       setState(saved.state);
-      setTurns([...saved.turns, { kind: 'app', text: welcomeBack(saved.state) }]);
+      setTurns([...saved.turns, { kind: 'welcome', text: welcomeBack(saved.state) }]);
       setRestored(true);
       return;
     }
@@ -287,6 +289,7 @@ export default function Home() {
               {t.kind === 'disclosure' && <Disclosure onGates={() => setSheet('gates')} />}
               {t.kind === 'app' && <p className="app-text">{t.text}</p>}
               {t.kind === 'care' && <p className="app-text">{t.text}</p>}
+              {t.kind === 'welcome' && <p className="app-text">{t.text}</p>}
               {t.kind === 'notice' && <p className="reflect-note">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
               {t.kind === 'synthesis' && <SynthesisCard body={t.synthesis.body} quotes={t.quotes} />}

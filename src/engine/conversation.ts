@@ -32,8 +32,8 @@ import { NO_OP, OPENING, takeTurn, type SessionState, type TurnDeps, type TurnOu
 export type ConvState = SessionState & {
   experiments?: ExperimentRecord[];
   support?: SupportState;
-  /** The last question we asked was a follow-up, so the next one comes from the bank. */
-  lastFollowUp?: boolean;
+  /** How many follow-ups in a row we have asked. After two, the bank gets a turn. */
+  followStreak?: number;
 };
 
 export interface FaithAnswer {
@@ -67,6 +67,8 @@ export interface ConvDeps {
   scripture?: YvConfig;
 }
 
+const MAX_FOLLOW_STREAK = 2;
+
 // ------------------------------------------------------------------ prompts
 
 function said(entries: { text: string }[]): string {
@@ -74,33 +76,44 @@ function said(entries: { text: string }[]): string {
 }
 
 export function replyPrompt(entries: { text: string }[]): string {
-  return `You are the mentor voice in WhyFinder. You are not a therapist, pastor or counselor.
+  return `You are the mentor voice in WhyFinder, a journal and navigator for noticing patterns in one's own life. You are not a therapist, pastor or counselor.
 
-What this person has told you so far:
+What this person has told you so far, oldest first:
 ${said(entries)}
 
 Write ONE or TWO plain sentences responding to the most recent thing they said.
 
-- Reflect something specific, using words they actually used.
-- No advice, no explanation of why they feel or act this way, no diagnosis.
-- Never write "you are a", "your purpose is", "that's why", or anything about what God wants.
+- Name something specific they just told you, in their own words, so they feel heard.
+- If something they said EARLIER connects to it, you may set the two side by side as a question, using their own words: "Earlier you mentioned the billing system; does explaining things come up here too?" Never say one caused the other.
+- Warm and plain, like a thoughtful friend. No advice, no diagnosis, no explaining why they feel or act this way.
+- Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
-- If you cannot say anything specific and true, reply with exactly: NONE
+- Only if the message is empty of anything concrete, reply with exactly: NONE
 Return only the sentences, no JSON.`;
 }
 
 export function followUpPrompt(entries: { text: string }[]): string {
+  // The questions go a little deeper as the conversation does, so it has a direction.
+  const real = entries.filter((e) => !isThin(e.text)).length;
+  const aim =
+    real <= 2
+      ? 'what they actually did or what it involved: the concrete details.'
+      : real <= 4
+        ? 'how it was for them: what held their attention, what drained them, or who it was for.'
+        : 'what they might want more of, or one small thing they could try next to find out.';
   return `You are the mentor voice in WhyFinder. You are not a therapist, pastor or counselor.
 
-What this person has told you so far:
+What this person has told you so far, oldest first:
 ${said(entries)}
 
 Ask ONE short follow-up question about something concrete in their MOST RECENT message: a thing they did, a person, a place, a task. The kind of question a curious friend asks to hear more.
 
+Aim the question at ${aim}
+
 - Use one of their own words for the thing you are asking about.
 - Open-ended: it should invite a sentence or two, not yes or no.
 - Under 140 characters. One question mark. No advice and no explanation.
-- Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God.
+- Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God unless they did.
 - If their message has nothing concrete to ask about, reply with exactly: NONE
 Return only the question.`;
 }
@@ -318,7 +331,7 @@ export async function takeConversationTurn(
   // A short follow-up about what they just said, every other turn, never when
   // they are struggling, giving a thin answer, or the pause is on.
   const followP: Promise<string | null> =
-    phase >= 2 && live && tier === 'none' && !paused && !isThin(text) && !s.lastFollowUp
+    phase >= 2 && live && tier === 'none' && !paused && !isThin(text) && (s.followStreak ?? 0) < MAX_FOLLOW_STREAK
       ? generateFollowUp(live, heard).catch(() => null)
       : Promise.resolve(null);
 
@@ -372,11 +385,11 @@ export async function takeConversationTurn(
       ...state,
       gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
       currentQuestionId: 'followup',
-      lastFollowUp: true,
+      followStreak: (s.followStreak ?? 0) + 1,
     };
     output = { ...output, text: followUp, questionId: 'followup' };
   } else {
-    state = { ...state, lastFollowUp: false };
+    state = { ...state, followStreak: 0 };
   }
 
   // One experiment per session, after the first synthesis is shown, and never
