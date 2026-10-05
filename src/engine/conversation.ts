@@ -18,7 +18,7 @@ import { careFor, concernTier, type Care } from '../constraints/concernTier.js';
 import { filterProse } from '../constraints/proseFilter.js';
 import { nextQuestion, recordServed } from '../constraints/questionGate.js';
 import {
-  SUPPORT_CHECKIN, SUPPORT_CONTINUE, evaluateSupport, isThin, saysNothingYet, supportCard,
+  SUPPORT_CHECKIN, SUPPORT_CONTINUE, TENDER_LINE, evaluateSupport, isThin, isTender, saysNothingYet, strainWeight, supportCard,
   type SupportCard, type SupportState,
 } from '../constraints/support.js';
 import { QUESTIONS } from '../content/questions.js';
@@ -34,6 +34,8 @@ export type ConvState = SessionState & {
   support?: SupportState;
   /** How many follow-ups in a row we have asked. After two, the bank gets a turn. */
   followStreak?: number;
+  /** Turns left to stay gentle after something tender was said. */
+  tenderLeft?: number;
 };
 
 export interface FaithAnswer {
@@ -153,12 +155,22 @@ const INTERROGATIVE = /^(?:how|what|why|should|does|do|is|can|will|where|who|whe
 const FAITH_OR_DIRECTION =
   /\b(god|jesus|christ|bible|scripture|pray|prayer|faith|sin|church|calling|called|purpose|direction|meaning|career|job|quit|leave|marry|move|anxiety|anxious|stress|stressed|worry|worried|lonely|depressed|overwhelmed|cope|afraid|scared)\b/i;
 
-/** The person is asking the app something, rather than answering a question. */
+const HELP_REQUEST =
+  /\b(?:i need (?:some )?help|need (?:some )?help|can you help|help me|how (?:can|do|should) i|what (?:can|should) i do|what do i do)\b/i;
+const GROWTH_OR_DIRECTION =
+  /\b(?:better person|become|grow|growth|change|direction|path|decision|decide|forgive|forgiveness|trust|faith|god|pray|prayer|calling|career|job|relationship|marriage|habits?|life)\b/i;
+
+/**
+ * The person is asking the app something, rather than answering a question.
+ * Either a real question about faith or direction, or a plain request for help
+ * with it ("I need help on how I can become a better person"). A request that
+ * comes with signs of strain is not routed here: the support path handles it.
+ */
 export function isAskingUs(text: string): boolean {
   const t = text.trim().replace(/^[\s"'“”‘’]+|[\s"'“”‘’\\]+$/g, '');
-  if (!t.includes('?')) return false;
   if (t.split(/\s+/).length < 4) return false;
-  return INTERROGATIVE.test(t) && FAITH_OR_DIRECTION.test(t);
+  if (t.includes('?') && INTERROGATIVE.test(t) && FAITH_OR_DIRECTION.test(t)) return true;
+  return HELP_REQUEST.test(t) && GROWTH_OR_DIRECTION.test(t) && strainWeight(t) === 0;
 }
 
 export const ANSWER_FALLBACK =
@@ -186,6 +198,12 @@ export async function generateReply(
   )).trim();
   if (!raw || /^none\b/i.test(raw)) return null;
   return filterProse(raw, { maxChars: 400 }).pass ? raw : null;
+}
+
+/** "Sentence one. Sentence two?" becomes "Sentence one." Null if nothing is left. */
+export function withoutQuestion(reply: string): string | null {
+  const m = reply.trim().match(/^([\s\S]*?[.!])\s+[^.!?]*\?$/);
+  return m ? m[1].trim() : null;
 }
 
 const STOP = new Set(['that','this','with','what','when','where','which','about','there','their','them','they',
@@ -330,21 +348,27 @@ export async function takeConversationTurn(
 
   // A short follow-up about what they just said, every other turn, never when
   // they are struggling, giving a thin answer, or the pause is on.
+  // Tenderness lingers: after something heavy, the next two turns stay gentle
+  // too, even if the next message ("connected") has no distress words in it.
+  const tenderNow = phase >= 2 && !paused && (tier === 'mild' || isTender(text));
+  const tender = tenderNow || (phase >= 2 && !paused && (s.tenderLeft ?? 0) > 0);
+  const tenderLeft = tenderNow ? 2 : Math.max(0, (s.tenderLeft ?? 0) - 1);
   const followP: Promise<string | null> =
-    phase >= 2 && live && tier === 'none' && !paused && !isThin(text) && (s.followStreak ?? 0) < MAX_FOLLOW_STREAK
+    phase >= 2 && live && tier === 'none' && !paused && !isThin(text)
+      && (tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
       ? generateFollowUp(live, heard).catch(() => null)
       : Promise.resolve(null);
 
   // No guess while the pause is on, after a thin answer, or before two real ones.
   const realAnswers = heard.filter((e) => !isThin(e.text)).length;
-  const hold = phase >= 2 && (paused || isThin(text) || realAnswers < 2);
+  const hold = phase >= 2 && (paused || tender || isThin(text) || realAnswers < 2);
 
   const before = s.synthesesOffered.length;
   const r = await takeTurn(s, text, {
     ...deps.turn,
     provider: hold ? NO_SYNTHESIS : deps.turn.provider,
   });
-  let state = { ...r.state, experiments: s.experiments, support: ev.next } as ConvState;
+  let state = { ...r.state, experiments: s.experiments, support: ev.next, tenderLeft } as ConvState;
   let output: ConversationOutput = { ...r.output };
 
   if (output.kind === 'acute') return { state, output };
@@ -376,25 +400,58 @@ export async function takeConversationTurn(
     synthesis = undefined;
   }
 
-  // Swap the bank question for a follow-up. The bank question is not used up:
-  // the gate is put back, and the next turn asks it.
+  // Stay with what they said. If the reply already asks something, that is the
+  // question. Otherwise a follow-up asks. If they are hurting and there is
+  // nothing good to ask, say so gently. None of these uses up a bank question:
+  // the gate is put back, and the bank gets its turn on a later, lighter turn.
   const followUp = await followP;
   const hasGuess = Boolean(synthesis);
-  if (followUp && !paused && !hasGuess && output.kind === 'question') {
-    state = {
-      ...state,
-      gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
-      currentQuestionId: 'followup',
-      followStreak: (s.followStreak ?? 0) + 1,
-    };
-    output = { ...output, text: followUp, questionId: 'followup' };
+  if (!paused && !hasGuess && output.kind === 'question') {
+    const canFollow = tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK;
+    const replyAsks = Boolean(output.reply && output.reply.trim().endsWith('?'));
+    let text: string | null = null;
+    if (replyAsks && !canFollow) {
+      // The bank gets this turn. Keep the reflection, drop its question, so
+      // there is only one question on the screen.
+      const kept = withoutQuestion(output.reply as string);
+      if (kept) output.reply = kept; else delete output.reply;
+    } else if (replyAsks) {
+      text = output.reply as string;
+      delete output.reply;
+    } else if (followUp) {
+      text = followUp;
+    }
+    if (text) {
+      state = {
+        ...state,
+        gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
+        currentQuestionId: 'followup',
+        followStreak: (s.followStreak ?? 0) + 1,
+      };
+      output = { ...output, text, questionId: 'followup' };
+    } else if (tender) {
+      state = {
+        ...state,
+        gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
+        currentQuestionId: 'tender',
+        followStreak: 0,
+      };
+      output = { ...output, text: TENDER_LINE, questionId: 'tender' };
+    } else {
+      state = { ...state, followStreak: 0 };
+    }
   } else {
+    // A guess card already asks something. Keep the reflection, drop its question.
+    if (hasGuess && output.reply && output.reply.trim().endsWith('?')) {
+      const kept = withoutQuestion(output.reply);
+      if (kept) output.reply = kept; else delete output.reply;
+    }
     state = { ...state, followStreak: 0 };
   }
 
   // One experiment per session, after the first synthesis is shown, and never
   // to someone the support card has just been shown to.
-  if (phase >= 3 && tier === 'none' && synthesis && state.synthesesOffered.length > before
+  if (phase >= 3 && tier === 'none' && !tender && synthesis && state.synthesesOffered.length > before
       && !state.support?.shown && (state.experiments ?? []).length === 0) {
     const x: Experiment = pickExperiment(state.entries as Entry[]);
     const o = offer(state, x, now);

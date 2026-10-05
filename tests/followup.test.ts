@@ -63,3 +63,103 @@ describe('follow-ups in the conversation', () => {
     expect((r.output as { questionId: string }).questionId).not.toBe('followup');
   });
 });
+
+import { BANNED_DISTRESS_CLAIMS } from '../src/config/patterns.js';
+import { TENDER_LINE, isTender } from '../src/constraints/support.js';
+import { isAskingUs, withoutQuestion } from '../src/engine/conversation.js';
+
+describe('staying with what they said', () => {
+  const REAL1 = 'I spent Saturday rewiring the shed with Tom.';
+  const HURT = 'Today I feel unwell because my friends were really mean to me.';
+  const tenderDeps = (...r: string[]) => ({ turn: { ...turnDeps, provider: fixtureProvider(['']) }, live: fixtureProvider(r) });
+
+  it('uses a question in the reply as THE question, so there is only one', async () => {
+    const r = await takeConversationTurn(newSession('u', 's'), REAL1,
+      tenderDeps('Rewiring a shed with Tom sounds like a full day. What was the hardest part?'));
+    const o = r.output as { text: string; questionId: string; reply?: string };
+    expect(o.text).toBe('Rewiring a shed with Tom sounds like a full day. What was the hardest part?');
+    expect(o.reply).toBeUndefined();
+    expect(o.questionId).toBe('followup');
+  });
+
+  it('never moves on to a list question, a guess or an experiment when they are hurting', async () => {
+    const deps = tenderDeps('That sounds hard.', 'NONE');
+    let r = await takeConversationTurn(newSession('u', 's'), REAL1, tenderDeps('Nice.', 'What did the shed involve?'));
+    r = await takeConversationTurn(r.state, HURT, deps);
+    const o = r.output as { text: string; questionId: string; synthesis?: unknown };
+    expect(o.synthesis).toBeUndefined();
+    expect(r.output.experiment).toBeUndefined();
+    expect(['followup', 'tender']).toContain(o.questionId);
+  });
+
+  it('says a gentle fixed line when hurting and the model has no good question', async () => {
+    const r = await takeConversationTurn(newSession('u', 's'), HURT, tenderDeps('NONE', 'NONE'));
+    expect((r.output as { text: string }).text).toBe(TENDER_LINE);
+    expect((r.output as { questionId: string }).questionId).toBe('tender');
+    expect(r.state.entries).toHaveLength(1);
+  });
+
+  it('knows tender language, and leaves ordinary talk alone', () => {
+    for (const t of ['I feel unwell', 'my friends were mean to me', "they don't really care about me",
+      'it feels like im distancing myself from god', 'im feeling quite distant from god right now',
+      "I just don't feel God in my life", 'God feels far away', 'my soul is lonely', 'I cried a lot']) expect(isTender(t)).toBe(true);
+    for (const t of ['I spent Saturday on the shed', 'people keep coming to me to explain the billing system']) {
+      expect(isTender(t)).toBe(false);
+    }
+  });
+
+  it('keeps the tender line clean (no detection claims, no purpose)', () => {
+    for (const re of BANNED_DISTRESS_CLAIMS) expect(TENDER_LINE).not.toMatch(re);
+    expect(TENDER_LINE).not.toMatch(/purpose/i);
+  });
+
+  it('drops a trailing question from a reflection', () => {
+    expect(withoutQuestion('That sounds like a full day. What was hard?')).toBe('That sounds like a full day.');
+    expect(withoutQuestion('What was hard?')).toBeNull();
+    expect(withoutQuestion('No question here.')).toBeNull();
+  });
+
+  it('after two follow-ups the bank gets a turn, with one question only', async () => {
+    let st = newSession('u', 's');
+    const asks = (n: number) => tenderDeps(`Nice part ${n}. What was the hardest bit of the shed?`);
+    let r = await takeConversationTurn(st, REAL1, asks(1));
+    r = await takeConversationTurn(r.state, 'We swapped the breaker and ran new wire.', asks(2));
+    r = await takeConversationTurn(r.state, 'Tom held the flashlight the whole time.', asks(3));
+    const o = r.output as { text: string; questionId: string; reply?: string };
+    expect(o.questionId).not.toBe('followup');
+    expect(o.reply ?? '').not.toMatch(/\?/);
+  });
+});
+
+describe('help requests and lingering tenderness', () => {
+  it('treats "I need help on how I can become a better person" as a question for the app', () => {
+    expect(isAskingUs('I need help on how i can become a better person')).toBe(true);
+    expect(isAskingUs('Can you help me figure out how to trust God with my career')).toBe(true);
+    expect(isAskingUs('I need help moving the couch on Saturday')).toBe(false);
+    expect(isAskingUs('I have extreme anxiety and I dont know what I can do to deal with it')).toBe(false);
+  });
+
+  it('answers a help request with a discernment card, not another reflective question', async () => {
+    const answer = JSON.stringify({
+      body: 'Many Christians describe growth as slow, ordinary choices. It may be worth asking what one small habit could look like.',
+      kind: 'christian_interpretation', scripture: ['Romans 12:2'],
+      questionsToConsider: ['Who in your life already lives the way you hope to?', 'What is one small thing this week?'],
+      counsel: ['A pastor or mentor you trust'],
+    });
+    const r = await takeConversationTurn(newSession('u', 's'), 'I need help on how i can become a better person',
+      { turn: turnDeps, live: fixtureProvider([answer]) });
+    expect(r.output.answer?.scripture).toEqual(['Romans 12:2']);
+  });
+
+  it('stays gentle for two more turns after something tender, even if the next answer is one word', async () => {
+    const live = () => ({ turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
+    let r = await takeConversationTurn(newSession('u', 's'), 'ive been feeling distant from god', live());
+    expect(r.state.tenderLeft).toBe(2);
+    r = await takeConversationTurn(r.state, 'connected', live());
+    expect(['followup', 'tender']).toContain((r.output as { questionId: string }).questionId);
+    expect(r.state.tenderLeft).toBe(1);
+    r = await takeConversationTurn(r.state, 'I think so', live());
+    expect(['followup', 'tender']).toContain((r.output as { questionId: string }).questionId);
+    expect(r.state.tenderLeft).toBe(0);
+  });
+});

@@ -162,6 +162,33 @@ export const SUPPORT_CHECKIN =
 export const SUPPORT_CONTINUE =
   'I am listening. Anything else on your mind? You can go back to the questions whenever you like.';
 
+// ------------------------------------------------------------------ tender moments
+
+/**
+ * Hurt that is not a crisis: a friend was unkind, someone feels unseen, someone
+ * feels far from God. It does not count toward the support card. It only means
+ * the app should stay with what was said instead of moving on to a list
+ * question, a guess or an experiment.
+ */
+const TENDER: RegExp[] = [
+  /\bunwell\b/i,
+  /\b(?:hurt|hurts|hurting|upset|sad|heartbroken|ashamed|rejected|betrayed|ignored|left out|unseen)\b/i,
+  /\bmean to me\b/i,
+  /\b(?:don'?t|doesn'?t|do not|does not) (?:really )?care (?:about|for) me\b/i,
+  /\bnobody (?:listens|gets me|understands)\b/i,
+  /\b(?:dista\w+|far|disconnected|cut off|separated|away|estranged) (?:myself )?from god\b/i,
+  /\bgod (?:feels|seems|is) (?:far|distant|absent|silent|gone|quiet)\b/i,
+  /\b(?:can'?t|don'?t|do not|cannot) (?:see|feel|hear|sense) god\b/i,
+  /\bcr(?:y|ied|ying)\b/i,
+];
+
+export function isTender(text: string): boolean {
+  return TENDER.some((re) => re.test(text)) || strainWeight(text) >= 1;
+}
+
+/** Said when the person is hurting and the model has no good follow-up. */
+export const TENDER_LINE = 'Take your time. I am here whenever you want to say more about that.';
+
 // ------------------------------------------------------------------ thin answers
 
 const THIN =
