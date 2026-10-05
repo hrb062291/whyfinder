@@ -25,6 +25,12 @@ const ELEVATED: RegExp[] = [
   /\bhate myself\b/i,
   /\bgiving up\b/i,
   /\bcan'?t stop crying\b/i,
+  // Passive ideation, any tense: "not sure I wanted to keep going", "didn't want to be here".
+  /\bnot (?:totally |really |even )?sure (?:i|that i) (?:want(?:ed)?|should) (?:to )?(?:keep going|go on|be here|live|stay)\b/i,
+  /\b(?:don'?t|didn'?t|do not|did not|no longer|never) (?:really )?want(?:ed)? to (?:keep going|go on|be here|live|exist|wake up|be alive)\b/i,
+  /\bcan'?t (?:keep going|go on|do this anymore)\b/i,
+  /\b(?:better|easier) (?:off )?without me\b/i,
+  /\bwish i (?:wasn'?t|were not|weren'?t) (?:here|alive|born)\b/i,
 ];
 
 const MILD: RegExp[] = [

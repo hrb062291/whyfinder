@@ -16,14 +16,25 @@
 import { PHASE } from '../config/phases.js';
 import { careFor, concernTier, type Care } from '../constraints/concernTier.js';
 import { filterProse } from '../constraints/proseFilter.js';
+import { nextQuestion, recordServed } from '../constraints/questionGate.js';
+import {
+  SUPPORT_CHECKIN, SUPPORT_CONTINUE, evaluateSupport, isThin, saysNothingYet, supportCard,
+  type SupportCard, type SupportState,
+} from '../constraints/support.js';
 import { QUESTIONS } from '../content/questions.js';
 import {
   offer, pickExperiment, type Experiment, type ExperimentRecord,
 } from '../content/experiments.js';
+import { fetchPassages, type Passage, type YvConfig } from '../content/scripture.js';
 import { STATEMENT_KINDS, type Entry, type ModelProvider, type StatementKind, type Synthesis } from '../types/index.js';
-import { OPENING, takeTurn, type SessionState, type TurnDeps, type TurnOutput } from './session.js';
+import { NO_OP, OPENING, takeTurn, type SessionState, type TurnDeps, type TurnOutput } from './session.js';
 
-export type ConvState = SessionState & { experiments?: ExperimentRecord[] };
+export type ConvState = SessionState & {
+  experiments?: ExperimentRecord[];
+  support?: SupportState;
+  /** The last question we asked was a follow-up, so the next one comes from the bank. */
+  lastFollowUp?: boolean;
+};
 
 export interface FaithAnswer {
   body: string;
@@ -32,12 +43,16 @@ export interface FaithAnswer {
   scripture: string[];
   questionsToConsider: string[];
   counsel: string[];
+  /** Real verse text from YouVersion, when configured. Never written by the model. */
+  passages?: Passage[];
 }
 
 export type ConversationOutput = TurnOutput & {
   care?: Care;
   reply?: string;
   answer?: FaithAnswer;
+  /** Shown once, when the session has felt heavy for a while. Fixed text. */
+  support?: SupportCard;
   experiment?: { id: string; title: string; source: ExperimentRecord['source'] };
 };
 
@@ -48,6 +63,8 @@ export interface ConvDeps {
   live?: ModelProvider;
   phase?: number;
   now?: Date;
+  /** YouVersion. Left undefined, answers show plain references. */
+  scripture?: YvConfig;
 }
 
 // ------------------------------------------------------------------ prompts
@@ -70,6 +87,22 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Never describe the inner life of anyone but this person.
 - If you cannot say anything specific and true, reply with exactly: NONE
 Return only the sentences, no JSON.`;
+}
+
+export function followUpPrompt(entries: { text: string }[]): string {
+  return `You are the mentor voice in WhyFinder. You are not a therapist, pastor or counselor.
+
+What this person has told you so far:
+${said(entries)}
+
+Ask ONE short follow-up question about something concrete in their MOST RECENT message: a thing they did, a person, a place, a task. The kind of question a curious friend asks to hear more.
+
+- Use one of their own words for the thing you are asking about.
+- Open-ended: it should invite a sentence or two, not yes or no.
+- Under 140 characters. One question mark. No advice and no explanation.
+- Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God.
+- If their message has nothing concrete to ask about, reply with exactly: NONE
+Return only the question.`;
 }
 
 export function answerPrompt(entries: { text: string }[]): string {
@@ -96,6 +129,8 @@ Rules. Output that breaks any of these is discarded.
 - Where Christians disagree (gifts, women in ministry, divorce, and so on) say that traditions differ and point to a pastor.
 - Where relevant, name the good that a choice could bring into their life, as well as the cost.
 - Do not use clinical or personality-type labels they did not use first.
+- Avoid "because", "that is why" and "which explains" when linking their feelings to causes. Put two separate observations side by side instead.
+- If they describe anxiety, low mood or distress: acknowledge it plainly in one sentence, never diagnose or name a condition, and give no medical advice. Ordinary, low-risk steps (writing the worry down, a short walk, telling one person) are fine. Say that a doctor or licensed counselor can help, and put one of those in "counsel" alongside a pastor or trusted friend.
 - "questionsToConsider" has two or three questions. "counsel" has one or two entries.`;
 }
 
@@ -103,7 +138,7 @@ Rules. Output that breaks any of these is discarded.
 
 const INTERROGATIVE = /^(?:how|what|why|should|does|do|is|can|will|where|who|when|am|are|would|could)\b/i;
 const FAITH_OR_DIRECTION =
-  /\b(god|jesus|christ|bible|scripture|pray|prayer|faith|sin|church|calling|called|purpose|direction|meaning|career|job|quit|leave|marry|move)\b/i;
+  /\b(god|jesus|christ|bible|scripture|pray|prayer|faith|sin|church|calling|called|purpose|direction|meaning|career|job|quit|leave|marry|move|anxiety|anxious|stress|stressed|worry|worried|lonely|depressed|overwhelmed|cope|afraid|scared)\b/i;
 
 /** The person is asking the app something, rather than answering a question. */
 export function isAskingUs(text: string): boolean {
@@ -138,6 +173,35 @@ export async function generateReply(
   )).trim();
   if (!raw || /^none\b/i.test(raw)) return null;
   return filterProse(raw, { maxChars: 400 }).pass ? raw : null;
+}
+
+const STOP = new Set(['that','this','with','what','when','where','which','about','there','their','them','they',
+  'then','than','have','were','been','your','from','just','like','really','very','some','more','much','also',
+  'into','over','only','still','would','could','should','because','while','after','before','being','doing',
+  'most','many','spent','life','time','things','thing','matters','matter','feel','feels','want','wants','mean','means']);
+
+const contentWords = (t: string): Set<string> =>
+  new Set((t.toLowerCase().match(/[a-z']{4,}/g) ?? []).filter((w) => !STOP.has(w)));
+
+/**
+ * One short follow-up about something the person actually said. It is checked,
+ * not trusted: it must be a single question, pass the prose filter, and reuse
+ * at least one of their own words. Anything else becomes null and the bank asks.
+ */
+export async function generateFollowUp(
+  live: ModelProvider, entries: { text: string }[],
+): Promise<string | null> {
+  const raw = (await live.complete(
+    entries.map((e) => ({ role: 'user', content: e.text })), followUpPrompt(entries),
+  )).trim().replace(/^["“]|["”]$/g, '');
+  if (!raw || /^none\b/i.test(raw)) return null;
+  if (raw.length > 180 || (raw.match(/\?/g) ?? []).length !== 1 || !raw.endsWith('?')) return null;
+  if (/^why\b/i.test(raw) || /\b(?:purpose|calling)\b/i.test(raw)) return null;
+  if (!filterProse(raw, { maxChars: 200 }).pass) return null;
+  const last = entries[entries.length - 1]?.text ?? '';
+  const theirs = contentWords(last);
+  const used = [...contentWords(raw)].some((w) => theirs.has(w));
+  return used ? raw : null;
 }
 
 export async function generateAnswer(
@@ -180,6 +244,26 @@ function currentQuestion(s: SessionState): { text: string; id: string } {
   return q ? { text: q.text, id: q.id } : { text: OPENING, id: s.currentQuestionId ?? 'opening' };
 }
 
+/**
+ * Passed to takeTurn when no guess should be attempted. It returns nothing, so
+ * the engine's own parse step finds no candidate and moves on. The entry is
+ * still recorded; only the guess is withheld.
+ */
+const NO_SYNTHESIS: ModelProvider = { name: 'fixture', async complete() { return ''; } };
+
+/** Back to the question bank after the support pause. No model call. */
+export function resumeQuestions(
+  s: ConvState, now: Date = new Date(),
+): { state: ConvState; output: ConversationOutput } {
+  const support = s.support ? { ...s.support, active: false } : undefined;
+  const q = nextQuestion(s.gate, now);
+  if (!q) return { state: { ...s, support }, output: { kind: 'exhausted', text: NO_OP } };
+  return {
+    state: { ...s, support, gate: recordServed(s.gate, q, now), currentQuestionId: q.id },
+    output: { kind: 'question', text: q.text, questionId: q.id },
+  };
+}
+
 export async function takeConversationTurn(
   s: ConvState, text: string, deps: ConvDeps,
 ): Promise<{ state: ConvState; output: ConversationOutput }> {
@@ -187,6 +271,13 @@ export async function takeConversationTurn(
   const now = deps.now ?? new Date();
   const { tier } = concernTier(text);
   const live = deps.live;
+
+  // The running count. Acute language never reaches it: that is takeTurn's path.
+  const ev = phase >= 2 && tier !== 'acute'
+    ? evaluateSupport(s.support, text, tier)
+    : { next: s.support, showCard: false };
+  const paused = phase >= 2 && Boolean(ev.next?.active);
+  const checkin = ev.showCard ? SUPPORT_CHECKIN : SUPPORT_CONTINUE;
 
   // Faith Q&A. Not an answer to the bank, so it is not recorded as an entry and
   // does not advance the question gate. Acute and elevated skip it entirely.
@@ -198,12 +289,20 @@ export async function takeConversationTurn(
       console.warn('[whyfinder] answer threw:', e instanceof Error ? e.message : String(e));
       answer = null;
     }
+    if (answer && deps.scripture && answer.scripture.length > 0) {
+      const passages = await fetchPassages(answer.scripture, deps.scripture).catch(() => []);
+      if (passages.length > 0) answer = { ...answer, passages };
+    }
     const q = currentQuestion(s);
-    const care = careFor(tier) ?? undefined;
+    const care = (ev.showCard && tier === 'mild' ? null : careFor(tier)) ?? undefined;
     return {
-      state: s,
+      state: { ...s, support: ev.next },
       output: {
-        kind: 'question', text: q.text, questionId: q.id, care,
+        kind: 'question',
+        text: paused ? checkin : q.text,
+        questionId: paused ? 'support' : q.id,
+        care,
+        support: ev.showCard ? supportCard(tier) : undefined,
         answer: answer ?? { body: ANSWER_FALLBACK, kind: 'ai_inference', scripture: [], questionsToConsider: [], counsel: [] },
       },
     };
@@ -216,24 +315,74 @@ export async function takeConversationTurn(
       ? generateReply(live, heard).catch(() => null)
       : Promise.resolve(null);
 
+  // A short follow-up about what they just said, every other turn, never when
+  // they are struggling, giving a thin answer, or the pause is on.
+  const followP: Promise<string | null> =
+    phase >= 2 && live && tier === 'none' && !paused && !isThin(text) && !s.lastFollowUp
+      ? generateFollowUp(live, heard).catch(() => null)
+      : Promise.resolve(null);
+
+  // No guess while the pause is on, after a thin answer, or before two real ones.
+  const realAnswers = heard.filter((e) => !isThin(e.text)).length;
+  const hold = phase >= 2 && (paused || isThin(text) || realAnswers < 2);
+
   const before = s.synthesesOffered.length;
-  const r = await takeTurn(s, text, deps.turn);
-  let state = r.state as ConvState;
-  state = { ...state, experiments: s.experiments };
-  const output: ConversationOutput = { ...r.output };
+  const r = await takeTurn(s, text, {
+    ...deps.turn,
+    provider: hold ? NO_SYNTHESIS : deps.turn.provider,
+  });
+  let state = { ...r.state, experiments: s.experiments, support: ev.next } as ConvState;
+  let output: ConversationOutput = { ...r.output };
 
   if (output.kind === 'acute') return { state, output };
 
-  const care = careFor(tier);
+  // The support pause. The bank does not advance; the entry is already recorded.
+  if (paused) {
+    state = {
+      ...state,
+      gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
+      currentQuestionId: 'support',
+    };
+    output = { kind: 'question', text: checkin, questionId: 'support' };
+  }
+
+  // The elevated line (it names 988) always stays. The card covers the mild one.
+  const care = ev.showCard && tier === 'mild' ? null : careFor(tier);
   if (care) output.care = care;
+  if (ev.showCard) output.support = supportCard(tier);
 
   const reply = await replyP;
   if (reply) output.reply = reply;
 
-  // One experiment per session, after the first synthesis is shown.
-  const synthesis = (r.output as { synthesis?: Synthesis }).synthesis;
+  // The model is allowed to say "nothing has surfaced yet". That is honest, but
+  // it is not a guess, so it never becomes a card with a "Keep this" button.
+  let synthesis = (output as { synthesis?: Synthesis }).synthesis;
+  if (synthesis && saysNothingYet(synthesis.body)) {
+    delete (output as { synthesis?: Synthesis }).synthesis;
+    state = { ...state, synthesesOffered: state.synthesesOffered.slice(0, -1) };
+    synthesis = undefined;
+  }
+
+  // Swap the bank question for a follow-up. The bank question is not used up:
+  // the gate is put back, and the next turn asks it.
+  const followUp = await followP;
+  const hasGuess = Boolean(synthesis);
+  if (followUp && !paused && !hasGuess && output.kind === 'question') {
+    state = {
+      ...state,
+      gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
+      currentQuestionId: 'followup',
+      lastFollowUp: true,
+    };
+    output = { ...output, text: followUp, questionId: 'followup' };
+  } else {
+    state = { ...state, lastFollowUp: false };
+  }
+
+  // One experiment per session, after the first synthesis is shown, and never
+  // to someone the support card has just been shown to.
   if (phase >= 3 && tier === 'none' && synthesis && state.synthesesOffered.length > before
-      && (state.experiments ?? []).length === 0) {
+      && !state.support?.shown && (state.experiments ?? []).length === 0) {
     const x: Experiment = pickExperiment(state.entries as Entry[]);
     const o = offer(state, x, now);
     state = o.state;

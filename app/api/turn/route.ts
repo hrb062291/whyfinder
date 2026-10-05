@@ -20,7 +20,8 @@ import { NextResponse } from 'next/server';
 import {
   begin, endSession, newSession, type SessionState,
 } from '../../../src/engine/session.js';
-import { takeConversationTurn, type ConvState } from '../../../src/engine/conversation.js';
+import { glooEnabled, glooGuardedProvider, withRetry } from '../../../src/providers/gloo.js';
+import { resumeQuestions, takeConversationTurn, type ConvState } from '../../../src/engine/conversation.js';
 import {
   chooseExperiment, recordReflection, type ExperimentChoice, type Feel,
 } from '../../../src/content/experiments.js';
@@ -30,7 +31,7 @@ import {
 import { assertServable } from '../../../src/config/reviewState.js';
 import { recordFallback } from '../../../src/observability/fallbackLog.js';
 import { QUESTIONS } from '../../../src/content/questions.js';
-import type { Entry } from '../../../src/types/index.js';
+import type { Entry, ModelProvider } from '../../../src/types/index.js';
 
 export const runtime = 'nodejs';
 
@@ -93,6 +94,8 @@ Hard rules. Output that breaks any of these is discarded before the person sees 
 - Never use a clinical or personality-typology label (ADHD, Enneagram, INTJ,
   burnout, attachment style) unless they used that exact word themselves first.
 - Describe what they keep DOING, not what they ARE.
+- Ignore entries that are only a few words or a deflection ("not much", "idk",
+  "nothing"). Never cite one as evidence for anything.
 
 If nothing real has surfaced yet, say so in "body" rather than inventing a pattern.`;
 }
@@ -122,7 +125,7 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json()) as {
-    action: 'begin' | 'turn' | 'end' | 'experiment' | 'reflect';
+    action: 'begin' | 'turn' | 'end' | 'experiment' | 'reflect' | 'resume';
     state?: ConvState;
     text?: string;
     experimentId?: string;
@@ -137,6 +140,11 @@ export async function POST(req: Request) {
   if (!body.state) return NextResponse.json({ error: 'missing state' }, { status: 400 });
   if (body.action === 'end') {
     return NextResponse.json({ state: body.state, output: endSession(body.state as SessionState) });
+  }
+
+  // "Back to the questions" after the support pause. No model call.
+  if (body.action === 'resume') {
+    return NextResponse.json(resumeQuestions(body.state));
   }
 
   // The experiment card's taps. State only; no model call.
@@ -172,8 +180,30 @@ export async function POST(req: Request) {
   ];
 
   const key = process.env.ANTHROPIC_API_KEY;
-  const backup = fixtureFor(willBe);
-  const live = key ? withFallback(anthropicProvider(key), backup, recordFallback) : null;
+  // With a live model configured, a failed call must never turn into canned
+  // output dressed as a real guess. The backup says nothing, and the person is
+  // told plainly. Fixtures stay only for the no-key demo mode.
+  const degraded = { v: false };
+  const silent: ModelProvider = {
+    name: 'fixture',
+    async complete() { degraded.v = true; return ''; },
+  };
+  const backup = key || glooEnabled(process.env) ? silent : fixtureFor(willBe);
+  // Gloo is used only when explicitly enabled (key AND C-21 confirmation).
+  // Order: Gloo (retry once) -> Anthropic -> recorded fallback.
+  const gloo = glooEnabled(process.env)
+    ? withFallback(
+        withRetry(glooGuardedProvider(process.env.GLOO_API_KEY as string, {
+          model: process.env.GLOO_MODEL || undefined,
+          tradition: process.env.GLOO_TRADITION || undefined,
+        })),
+        key ? anthropicProvider(key) : backup,
+        recordFallback,
+      )
+    : null;
+  const live = gloo
+    ? withFallback(gloo, backup, recordFallback)
+    : key ? withFallback(anthropicProvider(key), backup, recordFallback) : null;
 
   try {
     const r = await takeConversationTurn(state, body.text ?? '', {
@@ -185,10 +215,15 @@ export async function POST(req: Request) {
       // Replies and answers need the real model. On fixtures they are skipped,
       // never faked.
       live: live ?? undefined,
+      // YouVersion verse text. Off without a key. Only references are sent.
+      scripture: process.env.YVP_APP_KEY
+        ? { appKey: process.env.YVP_APP_KEY, bibleId: process.env.YVP_BIBLE_ID }
+        : undefined,
     });
     return NextResponse.json({
       ...r,
-      mode: live ? live.lastMode() : 'fixtures',
+      mode: live ? (degraded.v ? 'fallback' : 'primary') : 'fixtures',
+      degraded: degraded.v,
       fallbackReason: live ? live.lastError() : null,
     });
   } catch (e) {

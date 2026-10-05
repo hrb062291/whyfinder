@@ -17,16 +17,23 @@ import type { Synthesis } from '../src/types/index.js';
 
 type Answer = {
   body: string; kind: string; scripture: string[]; questionsToConsider: string[]; counsel: string[];
+  passages?: { reference: string; text: string; version: string; versionTitle: string; copyright: string; link?: string }[];
 };
 type Experiment = { id: string; title: string };
+type Support = {
+  title: string; lead: string; items: { name: string; detail: string }[];
+  note: string; showResources: boolean;
+};
 
 type Turn =
   | { kind: 'disclosure' }
   | { kind: 'app'; text: string }
   | { kind: 'care'; text: string }
+  | { kind: 'notice'; text: string }
   | { kind: 'you'; text: string }
   | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] }
   | { kind: 'answer'; answer: Answer }
+  | { kind: 'support'; support: Support }
   | { kind: 'experiment'; experiment: Experiment };
 
 const RESOURCES = [
@@ -43,6 +50,8 @@ const OPEN_GATES = [
    'Borrowed verbatim from 988 and Crisis Text Line. A clinician has not reviewed our own version.'],
   ['Gentle check-in wording',
    'The short lines shown for lower-level distress are ours, and a clinician has not reviewed them.'],
+  ['Support card wording',
+   'The card that points to counselors, pastors and people nearby is ours, and a clinician and pastoral reviewer have not signed off on it.'],
   ['The harder questions',
    'Questions about pain, regret, fear and loss are switched off until a pastoral reviewer has signed off on them.'],
   ['How we label scripture',
@@ -56,6 +65,54 @@ const KIND_LABEL: Record<string, string> = {
   ai_inference: 'A guess, not a finding',
 };
 
+// ------------------------------------------------------------------ memory on this device
+
+const SAVE_KEY = 'whyfinder.conversation.v1';
+const SAVE_DAYS = 30;
+
+type Saved = { state: Record<string, unknown>; turns: Turn[]; at: number };
+
+function loadSaved(): Saved | null {
+  try {
+    const raw = window.localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as Saved;
+    const said = (v.state?.entries as unknown[] | undefined)?.length ?? 0;
+    if (!v.state || !Array.isArray(v.turns) || said === 0 || Date.now() - v.at > SAVE_DAYS * 86_400_000) {
+      window.localStorage.removeItem(SAVE_KEY);
+      return null;
+    }
+    // A pause from last time should not still be on. Start with the questions available.
+    const support = v.state.support as { active?: boolean } | undefined;
+    if (support) v.state = { ...v.state, support: { ...support, active: false } };
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+function save(state: Record<string, unknown>, turns: Turn[]) {
+  try {
+    window.localStorage.setItem(SAVE_KEY, JSON.stringify({ state, turns, at: Date.now() }));
+  } catch {
+    /* Private window or full storage. The conversation still works. */
+  }
+}
+
+function clearSaved() {
+  try { window.localStorage.removeItem(SAVE_KEY); } catch { /* nothing to clear */ }
+}
+
+/** Their own words from last time, never a summary the app wrote about them. */
+function welcomeBack(state: Record<string, unknown>): string {
+  const entries = (state.entries as { text: string }[] | undefined) ?? [];
+  const last = [...entries].reverse().find((e) => e.text.trim().split(/\s+/).length >= 4);
+  if (!last) return 'Welcome back. We can pick up where we left off.';
+  const t = last.text.trim();
+  const snippet = t.length > 90 ? `${t.slice(0, 90).replace(/\s+\S*$/, '')}\u2026` : t;
+  return `Welcome back. Last time you said, \u201c${snippet}\u201d. We can pick up from there, or you can start somewhere new.`;
+}
+
 export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([{ kind: 'disclosure' }]);
   const [state, setState] = useState<Record<string, unknown> | null>(null);
@@ -65,11 +122,19 @@ export default function Home() {
   const ta = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const started = useRef(false);
+  const [restored, setRestored] = useState(false);
 
   useEffect(() => {
     // Strict Mode runs effects twice in dev; begin once.
     if (started.current) return;
     started.current = true;
+    const saved = loadSaved();
+    if (saved) {
+      setState(saved.state);
+      setTurns([...saved.turns, { kind: 'app', text: welcomeBack(saved.state) }]);
+      setRestored(true);
+      return;
+    }
     fetch('/api/turn', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -89,6 +154,30 @@ export default function Home() {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns]);
 
+  // Remember the conversation on this device only. Nothing goes to a server.
+  useEffect(() => {
+    if (state) save(state, turns);
+  }, [state, turns]);
+
+  function startOver() {
+    clearSaved();
+    setRestored(false);
+    setState(null);
+    setTurns([{ kind: 'disclosure' }]);
+    started.current = false;
+    fetch('/api/turn', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'begin' }),
+    })
+      .then((r) => r.json())
+      .then((r) => {
+        setState(r.state);
+        setTurns((t) => [...t, { kind: 'app', text: r.output.then ?? r.output.text }]);
+      })
+      .catch(() => setTurns((t) => [...t, { kind: 'app', text: "Tell me what's been on your mind lately." }]));
+  }
+
   /** Experiment taps update server-shaped state only; no model call. */
   async function post(payload: Record<string, unknown>) {
     try {
@@ -101,6 +190,22 @@ export default function Home() {
       if (r.state) setState(r.state);
     } catch {
       /* The card still resolves locally; nothing is lost but the note. */
+    }
+  }
+
+  /** "Back to the questions" after the support pause. Server picks the next one. */
+  async function resume() {
+    try {
+      const res = await fetch('/api/turn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'resume', state }),
+      });
+      const r = await res.json();
+      if (r.state) setState(r.state);
+      if (r.output?.text) setTurns((t) => [...t, { kind: 'app', text: r.output.text }]);
+    } catch {
+      setTurns((t) => [...t, { kind: 'app', text: 'Something went wrong on my end. Try that again?' }]);
     }
   }
 
@@ -131,9 +236,16 @@ export default function Home() {
         setSheet('crisis');
       } else {
         const next: Turn[] = [];
+        if (r.degraded) {
+          next.push({
+            kind: 'notice',
+            text: 'I could not reach the language model just now, so I am not offering a reply or a guess this turn. What you wrote is still here.',
+          });
+        }
         if (o.care) next.push({ kind: 'care', text: o.care.text });
         if (o.reply) next.push({ kind: 'app', text: o.reply });
         if (o.answer) next.push({ kind: 'answer', answer: o.answer });
+        if (o.support) next.push({ kind: 'support', support: o.support });
         if (o.synthesis) {
           const quotes: string[] = (o.synthesis.evidence as string[])
             .map((id: string) => (r.state.entries as { id: string; text: string }[])
@@ -144,7 +256,7 @@ export default function Home() {
         if (o.text) next.push({ kind: 'app', text: o.text });
         if (o.experiment) next.push({ kind: 'experiment', experiment: o.experiment });
         setTurns((t) => [...t, ...next]);
-        if (o.care?.showResources) setSheet('crisis');
+        if (o.care?.showResources || o.support?.showResources) setSheet('crisis');
       }
     } catch {
       setTurns((t) => [...t, { kind: 'app', text: 'Something went wrong on my end. Try that again?' }]);
@@ -159,6 +271,9 @@ export default function Home() {
           <div className="wordmark">
             Why<span>Finder</span>
           </div>
+          {(restored || turns.length > 2) && (
+            <button className="crisis-link" onClick={startOver}>Clear this device</button>
+          )}
           <button className="crisis-link" onClick={() => setSheet('crisis')}>
             Need to talk to someone now
           </button>
@@ -172,9 +287,14 @@ export default function Home() {
               {t.kind === 'disclosure' && <Disclosure onGates={() => setSheet('gates')} />}
               {t.kind === 'app' && <p className="app-text">{t.text}</p>}
               {t.kind === 'care' && <p className="app-text">{t.text}</p>}
+              {t.kind === 'notice' && <p className="reflect-note">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
               {t.kind === 'synthesis' && <SynthesisCard body={t.synthesis.body} quotes={t.quotes} />}
               {t.kind === 'answer' && <AnswerCard a={t.answer} />}
+              {t.kind === 'support' && (
+                <SupportCardView s={t.support} onResume={() => void resume()}
+                                 onResources={() => setSheet('crisis')} />
+              )}
               {t.kind === 'experiment' && (
                 <ExperimentCard
                   x={t.experiment}
@@ -258,6 +378,10 @@ function Disclosure({ onGates }: { onGates: () => void }) {
         counselor &mdash; I&rsquo;m a tool for thinking out loud. And training on anything you write
         here is off unless you turn it on yourself in settings.
       </p>
+      <p>
+        This conversation is kept on this device only, so you can come back to it. &ldquo;Clear this
+        device&rdquo; at the top erases it.
+      </p>
       <div className="proto">
         <div className="proto-dot" />
         <p>
@@ -318,7 +442,14 @@ function AnswerCard({ a }: { a: Answer }) {
       {a.scripture.length > 0 && (
         <div className="syn-evidence">
           <div className="syn-evidence-label">Where to read</div>
-          {a.scripture.map((s, i) => <p className="quote" key={i}>{s}</p>)}
+          {a.passages && a.passages.length > 0
+            ? a.passages.map((p, i) => (
+                <div key={i}>
+                  <p className="quote"><strong>{p.reference}</strong> ({p.version}) {p.text}</p>
+                  <p className="reflect-note">{p.versionTitle}. {p.copyright}{p.link ? <> <a href={p.link} target="_blank" rel="noreferrer">Read on YouVersion</a></> : null}</p>
+                </div>
+              ))
+            : a.scripture.map((s, i) => <p className="quote" key={i}>{s}</p>)}
         </div>
       )}
       {a.questionsToConsider.length > 0 && (
@@ -331,6 +462,45 @@ function AnswerCard({ a }: { a: Answer }) {
         <div className="syn-evidence">
           <div className="syn-evidence-label">People worth talking to</div>
           {a.counsel.map((c, i) => <p className="quote" key={i}>{c}</p>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Shown once, when the session has felt heavy for a while. Fixed text. It points
+ * to people, says out loud that the pause lives only in this conversation, and
+ * lets the person choose. Nothing here counts, scores or stores anything (C-27).
+ */
+function SupportCardView({ s, onResume, onResources }: {
+  s: Support; onResume: () => void; onResources: () => void;
+}) {
+  const [phase, setPhase] = useState<'open' | 'staying' | 'resumed'>('open');
+  return (
+    <div className="synthesis">
+      <div className="syn-kind">{s.title}</div>
+      <div className="syn-body">{s.lead}</div>
+      <div className="syn-evidence">
+        {s.items.map((i) => (
+          <div key={i.name}>
+            <div className="syn-evidence-label">{i.name}</div>
+            <p className="quote">{i.detail}</p>
+          </div>
+        ))}
+      </div>
+      <p className="composer-note">{s.note}</p>
+      {phase === 'open' ? (
+        <div className="syn-actions">
+          <button className="btn btn-accept" onClick={() => setPhase('staying')}>Keep talking</button>
+          <button className="btn" onClick={() => { setPhase('resumed'); onResume(); }}>
+            Back to the questions
+          </button>
+          <button className="btn btn-ghost" onClick={onResources}>More ways to reach someone</button>
+        </div>
+      ) : (
+        <div className="syn-resolved">
+          {phase === 'staying' ? 'I am here. Say whatever is on your mind.' : 'Back to the questions whenever you are ready.'}
         </div>
       )}
     </div>
