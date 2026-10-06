@@ -164,6 +164,30 @@ describe('help requests and lingering tenderness', () => {
   });
 });
 
+describe('loneliness conversation stays on the person', () => {
+  it('never hands a stock bank question to someone who said they were lonely', async () => {
+    const asks = (n: number) => ({ turn: turnDeps, live: fixtureProvider(['NONE', `A line about message ${n}. What is that like?`]) });
+    const msgs = [
+      "i've been extremely lonely recently.",
+      "I just read books and watch tv shows all morning and then I came to my relatives house but it didn't seem like i was having any genuine connection.",
+      'steady distant',
+      'no I find more comfort since im distracted',
+      'idk what to do about the lonliness',
+    ];
+    let r = await takeConversationTurn(newSession('u', 's'), msgs[0], asks(0));
+    for (let i = 1; i < msgs.length; i++) {
+      r = await takeConversationTurn(r.state, msgs[i], asks(i));
+      const o = r.output as { text?: string; questionId?: string };
+      expect(['followup', 'tender', 'support']).toContain(o.questionId);
+      expect(o.text ?? '').not.toMatch(/Walk me through yesterday|What do people come to you for/);
+    }
+  });
+
+  it('matches common spellings of lonely', () => {
+    for (const w of ['lonely', 'loneliness', 'lonliness', 'lonly']) expect(isTender(`I feel ${w}`)).toBe(true);
+  });
+});
+
 describe('direct questions are answered', () => {
   it.each([
     'EXPLAIN TO ME WHO GOD IS TO A PERSON. Hhow should i see god in my life?',

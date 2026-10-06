@@ -380,7 +380,8 @@ export async function takeConversationTurn(
   // "What is the point of you?" gets a plain, fixed answer. No model call.
   if (phase >= 2 && (tier === 'none' || tier === 'mild') && asksAboutApp(text)) {
     const asked = s.currentQuestionId;
-    const repeatable = !asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked);
+    const hurtLately = [...s.entries, { text }].slice(-6).some((e) => isTender(e.text));
+    const repeatable = !hurtLately && (!asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked));
     const q = currentQuestion(s);
     return {
       state: { ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }) },
@@ -416,7 +417,8 @@ export async function takeConversationTurn(
     // question or the opening. After a follow-up, a gentle line is better than
     // repeating "Tell me what has been on your mind lately."
     const asked = s.currentQuestionId;
-    const repeatable = !asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked);
+    const hurtLately = [...s.entries, { text }].slice(-6).some((e) => isTender(e.text));
+    const repeatable = !hurtLately && (!asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked));
     // A real answer already points to people. The stock mild line only stays if the answer failed.
     const care = ((ev.showCard || answer) && tier === 'mild' ? null : careFor(tier)) ?? undefined;
     return {
@@ -446,9 +448,12 @@ export async function takeConversationTurn(
   const tenderNow = phase >= 2 && !paused && (tier === 'mild' || isTender(text));
   const tender = tenderNow || (phase >= 2 && !paused && (s.tenderLeft ?? 0) > 0);
   const tenderLeft = tenderNow ? 2 : Math.max(0, (s.tenderLeft ?? 0) - 1);
+  // Someone who said something hurting in the last few messages is not handed a
+  // stock bank question ("Walk me through yesterday"). The follow-up stays on them.
+  const recentHurt = phase >= 2 && !paused && heard.slice(-6).some((e) => isTender(e.text));
   const followP: Promise<string | null> =
     phase >= 2 && live && (tier === 'none' || tier === 'mild') && !ev.showCard && !isThin(text)
-      && (paused || tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
+      && (paused || tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
       ? generateFollowUp(live, heard).catch(() => null)
       : Promise.resolve(null);
 
@@ -506,7 +511,7 @@ export async function takeConversationTurn(
   const followUp = await followP;
   const hasGuess = Boolean(synthesis);
   if (!paused && !hasGuess && output.kind === 'question') {
-    const canFollow = tender || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK;
+    const canFollow = tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK;
     const replyAsks = Boolean(output.reply && output.reply.trim().endsWith('?'));
     let text: string | null = null;
     if (replyAsks && !canFollow) {
@@ -528,7 +533,7 @@ export async function takeConversationTurn(
         followStreak: (s.followStreak ?? 0) + 1,
       };
       output = { ...output, text, questionId: 'followup' };
-    } else if (tender) {
+    } else if (tender || recentHurt) {
       state = {
         ...state,
         gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },

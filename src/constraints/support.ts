@@ -58,7 +58,7 @@ const STRONG: RegExp[] = [
 const SOFT: RegExp[] = [
   /\bstress(?:ed|ful)?\b/i,
   /\bworr(?:y|ied|ying)\b/i,
-  /\blonely\b/i,
+  /\blone?l(?:y|iness)\b/i,
   /\blost\b/i,
   /\bscared\b/i,
   /\boverwhelm(?:ed|ing)?\b/i,
