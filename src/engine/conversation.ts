@@ -229,7 +229,7 @@ export interface ConvDeps {
   scripture?: YvConfig;
 }
 
-const MAX_FOLLOW_STREAK = 2;
+const MAX_FOLLOW_STREAK = 4;
 
 // ------------------------------------------------------------------ prompts
 
@@ -250,7 +250,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - If something they said EARLIER connects to it, you may set the two side by side as a question, using their own words: "Earlier you mentioned the billing system; does explaining things come up here too?" Never say one caused the other.
 - Warm and plain, like a thoughtful friend. No advice, no diagnosis, no explaining why they feel or act this way.
 - If their latest message shares a step forward (something they built, tried, finished or started; a new chapter; a strength from something they lost that they are now using somewhere new), begin by genuinely affirming it in specific words: name what they are doing and where it came from, for example that the resilience soccer gave them is showing up in the hackathon. Affirm what they are doing, never who they are. Vary the wording each time; do not open with "Congratulations" every time. Put the affirmation in its own full sentence, ending with a period, before any question.
-- Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
+- Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks; refer to what they said naturally, and do not keep returning to the same earlier detail. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
 - Never say you saved, noted or added anything to their journal. You cannot; only the app's journal buttons and commands can.
@@ -722,8 +722,8 @@ export async function takeConversationTurn(
   // A short answer ("idk") right after an answer card or a follow-up: stay on the
   // topic with a follow-up about the whole conversation, not a stock question.
   const thinFollowP: Promise<string | null> =
-    phase >= 2 && live && tier === 'none' && !ev.showCard && isThin(text) && s.entries.length >= 2
-      && s.currentQuestionId === 'followup' && (s.followStreak ?? 0) < MAX_FOLLOW_STREAK + 1
+    phase >= 2 && live && tier === 'none' && !ev.showCard && isThin(text) && s.entries.length >= 1
+      && (s.followStreak ?? 0) < MAX_FOLLOW_STREAK + 1
       ? generateFollowUp(live, heard, prior).catch(() => null)
       : Promise.resolve(null);
 
@@ -928,7 +928,13 @@ export async function takeConversationTurn(
       // Keep the affirmation or reflection. If it cannot be kept without its
       // question, wait for a later turn rather than lose it.
       let ok = true;
-      if (output.reply && output.reply.trim().endsWith('?')) {
+      // The reply's question may already have moved into the question slot. Keep
+      // its statement part as the reply, so the reflection is not lost.
+      const q = (output as { text?: string }).text;
+      if (!output.reply && q && (output as { questionId?: string }).questionId === 'followup') {
+        const kept = keepStatement(q);
+        if (kept) output.reply = kept;
+      } else if (output.reply && output.reply.trim().endsWith('?')) {
         const kept = keepStatement(output.reply);
         if (kept) output.reply = kept; else ok = false;
       }

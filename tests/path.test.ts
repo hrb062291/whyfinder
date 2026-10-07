@@ -164,6 +164,21 @@ describe('the conversation flows: one card at a time', () => {
     expect(r.state.bibleOffered).toBe(true);
   });
 
+  it('the Scripture offer keeps the reflection even when it was a question', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), opener, live());
+    r = await takeConversationTurn(r.state, 'my friends', live('Your friends were a big part of it. Is it the people you miss most?', 'NONE'));
+    expect(r.state.bibleOffered).toBe(true);
+    expect(r.output.reply).toBe('Your friends were a big part of it.');
+    expect((r.output as { text?: string }).text).toMatch(/Bible|Scripture/);
+  });
+
+  it('a short answer to a stock question picks up the earlier thread', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'I spent Saturday fixing the fence with my neighbor Tom.', live());
+    expect(r.state.currentQuestionId).not.toBe('followup');
+    r = await takeConversationTurn(r.state, 'yeah', live('NONE', 'What was it like working on the fence with Tom?'));
+    expect((r.output as { text?: string }).text).toBe('What was it like working on the fence with Tom?');
+  });
+
   it('never two cards on one screen', async () => {
     const msgs = [opener, 'my friends', "I'm using the resilience soccer taught me in a hackathon now", 'idk', 'yeah',
       'we are building an app', 'it helps people think', 'ok', 'sure', 'maybe', 'I guess'];
