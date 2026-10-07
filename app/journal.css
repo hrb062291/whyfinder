@@ -1,0 +1,98 @@
+/* The journal side panel. Self-contained: it uses its own j- classes and only
+   borrows .btn, .quote and .syn-* from the main stylesheet. */
+
+.j-panel {
+  position: fixed;
+  top: var(--wf-topbar-h, 60px);
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100vw);
+  z-index: 40;
+  overflow-y: auto;
+  padding: 18px 18px 28px;
+  box-sizing: border-box;
+  background: var(--bg, var(--background, Canvas));
+  color: inherit;
+  border-left: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  box-shadow: -8px 0 24px color-mix(in srgb, currentColor 8%, transparent);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.j-head { display: flex; align-items: center; justify-content: space-between; }
+.j-title { font-size: 17px; font-weight: 600; }
+.j-close {
+  font: inherit; font-size: 22px; line-height: 1; cursor: pointer;
+  background: none; border: 0; color: inherit; opacity: 0.7; padding: 4px 8px;
+}
+.j-close:hover { opacity: 1; }
+.j-lead { margin: 6px 0 14px; opacity: 0.75; }
+
+.j-section { margin: 20px 0 0; }
+.j-h {
+  margin: 0 0 8px; font-size: 12px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.7;
+}
+.j-empty { margin: 0; opacity: 0.65; }
+
+.j-card {
+  margin: 0 0 10px; padding: 12px 12px 10px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+.j-tag { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.6; }
+.j-body { margin: 6px 0 8px; }
+.j-why { margin: 0 0 8px; }
+.j-why summary { cursor: pointer; opacity: 0.75; font-size: 13px; }
+.j-row { display: flex; gap: 14px; align-items: center; }
+
+.j-link {
+  font: inherit; font-size: 13px; cursor: pointer; padding: 0;
+  background: none; border: 0; color: inherit; text-decoration: underline; opacity: 0.85;
+}
+.j-link:hover { opacity: 1; }
+
+.j-list { list-style: none; margin: 0; padding: 0; }
+.j-list li {
+  padding: 8px 0; display: flex; flex-direction: column; gap: 2px;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+.j-list li:first-child { border-top: 0; }
+.j-time { font-size: 12px; opacity: 0.55; }
+
+.j-edit { margin-top: 10px; }
+.j-edit-label { display: block; font-size: 13px; opacity: 0.75; margin-bottom: 6px; }
+.j-edit-box {
+  width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px; resize: vertical;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 10px; background: transparent; color: inherit; margin-bottom: 8px;
+}
+
+.j-foot {
+  margin-top: 26px; padding-top: 14px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+.j-foot-note { font-size: 12px; opacity: 0.6; }
+
+@media (max-width: 640px) {
+  .j-panel { width: 100vw; border-left: 0; }
+}
+
+/* The Journal button in the top bar is not a crisis link: no red, no red dot. */
+.crisis-link.j-top { color: inherit; }
+.crisis-link.j-top::before,
+.crisis-link.j-top::after { display: none; }
+
+/* The top bar (Clear this device, Journal, crisis link) stays at the top while scrolling.
+   Fixed rather than sticky: sticky only holds inside its parent, and the page's wrapper
+   can be shorter than the content. The body gets matching padding so nothing hides under it. */
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--wf-bg, var(--bg, var(--background, Canvas)));
+}
+body { padding-top: var(--wf-topbar-h, 0px); }

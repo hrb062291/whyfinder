@@ -4,3 +4,4 @@ out/
 .env*.local
 .vercel
 *.tsbuildinfo
+scripts/transcripts.txt
