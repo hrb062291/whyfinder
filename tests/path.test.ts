@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { replyPrompt, takeChoice, takeConversationTurn } from '../src/engine/conversation.js';
+import { ALREADY_KNOW, replyPrompt, takeChoice, takeConversationTurn, typedPath } from '../src/engine/conversation.js';
 import { newSession } from '../src/engine/session.js';
+import { journalRequest, pickPassages } from '../src/engine/journalRequest.js';
 import { fixtureProvider } from '../src/providers/index.js';
 
 const turnDeps = { provider: fixtureProvider(['']), systemPrompt: 'X', thirdPartyNames: [] };
@@ -189,5 +190,143 @@ describe('the conversation flows: one card at a time', () => {
       const cards = [o.synthesis, o.experiment, o.choices, o.answer, r.state.bibleOffered || undefined].filter(Boolean).length;
       expect(cards).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+describe('from the final live test', () => {
+  it('"Ecclesiastes 4:9-12. I would like to add this to my journal" saves the passage', () => {
+    expect(journalRequest('Ecclesiastes 4:9-12. I would like to add this to my journal')?.content).toBe('Ecclesiastes 4:9-12.');
+    expect(journalRequest('I would like to add this to my journal')).toEqual({ content: null });
+    expect(journalRequest('I want to put my thoughts in my journal more often')).toBeNull();
+  });
+
+  it('a short answer right after a crisis is met gently, not with a question about something else', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'I am using what soccer taught me at a hackathon.', live());
+    r = await takeConversationTurn(r.state, 'i want to kill myslef', live());
+    expect(r.output.kind).toBe('acute');
+    r = await takeConversationTurn(r.state, 'idk', live('NONE', 'What part of the hackathon felt like soccer?'));
+    expect((r.output as { text?: string }).text).not.toBe('What part of the hackathon felt like soccer?');
+  });
+
+  it('right after a crisis, "idk" gets kind words and no question about work', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'work is a lot', live());
+    r = await takeConversationTurn(r.state, 'i want to kill myslef', live());
+    r = await takeConversationTurn(r.state, 'idk',
+      live("That's okay, it can be hard to put words to when work is a lot. If one moment from this week at work comes to mind, what was it?", 'NONE'));
+    const o = r.output as { text?: string; reply?: string };
+    expect(o.reply).toBe("That's okay, it can be hard to put words to when work is a lot.");
+    expect(o.text).toMatch(/Take your time|still here|No rush/i);
+    expect(o.text).not.toMatch(/work/);
+  });
+
+  it('a long, real message gets a question about it, not a stock question', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'Rewiring the shed with Tom took all of Saturday.', live('NONE', 'What did rewiring the shed with Tom involve?'));
+    for (const [m, q] of [
+      ['We ran new wire from the house to the shed.', 'What was running the wire to the shed like?'],
+      ['Tom held the ladder while I worked on the shed.', 'What was it like working on the shed with Tom?'],
+      ['The breaker in the shed was older than both of us.', 'What did you do about the old breaker in the shed?'],
+      ['We replaced the breaker and the shed lights finally worked.', 'What did you and Tom do once the shed lights worked?'],
+    ]) r = await takeConversationTurn(r.state, m, live('NONE', q));
+    expect(r.state.followStreak).toBeGreaterThanOrEqual(4);
+    r = await takeConversationTurn(r.state, 'Honestly working with my hands like that with Tom is the best part of my whole week.',
+      live('NONE', 'What makes working with your hands with Tom the best part of the week?'));
+    expect((r.output as { text?: string }).text).toBe('What makes working with your hands with Tom the best part of the week?');
+  });
+
+  it('remembers which passages were shown, so the next answer can choose others', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'I played soccer my whole life and wanted to go pro.', live());
+    r = await takeConversationTurn(r.state, 'Now it is over for me and I feel like it is time to move on but I do not know how.', live());
+    r = await takeConversationTurn(r.state, 'yes', live(ANSWER));
+    expect(r.state.said?.join(' ')).toMatch(/already shared: Ecclesiastes 3:1/);
+  });
+});
+
+describe('saving a verse, from the live test', () => {
+  const p = (reference: string, text: string) => ({ reference, version: 'BSB', text });
+  const answer = [p('Genesis 2:15', 'Then the Lord God took the man...'), p('Colossians 3:23', 'Whatever you do, work at it with your whole being...')];
+  const later = [p('Psalm 34:18', 'The Lord is near to the brokenhearted...')];
+
+  it('"can I save that verse?" and "add colossionons verse" are save requests', () => {
+    expect(journalRequest('can I save that verse?')).toEqual({ content: 'that verse' });
+    expect(journalRequest('add colossionons verse')).toEqual({ content: 'colossionons verse' });
+    expect(journalRequest('keep this passage please')).toEqual({ content: 'this passage' });
+    expect(journalRequest('I want to keep that verse in mind this week')).toBeNull();
+    expect(journalRequest('The verse about work stuck with me')).toBeNull();
+  });
+
+  it('finds the passage they mean, with its words', () => {
+    expect(pickPassages('that verse', [later, answer])).toEqual(later);
+    expect(pickPassages('colossionons verse', [later, answer])).toEqual([answer[1]]);
+    expect(pickPassages('Colossians 3:23', [later, answer])).toEqual([answer[1]]);
+    expect(pickPassages('Ecclesiastes 4:9-12.', [later, answer])).toBeNull();
+    expect(pickPassages('call my sister', [later, answer])).toBeNull();
+  });
+
+  it('the reply never points to buttons for saving', () => {
+    expect(replyPrompt([{ text: 'can I keep that?' }])).toMatch(/add that to my journal/);
+  });
+});
+
+describe('typing a path instead of tapping it, from the live test', () => {
+  it('reads what they typed', () => {
+    const after = { entries: [1, 2, 3], choicesAt: 3 };
+    expect(typedPath('All three', after)).toBe('both');
+    expect(typedPath('both please', after)).toBe('both');
+    expect(typedPath('go deeper', after)).toBe('deeper');
+    expect(typedPath('the bible one', after)).toBe('bible');
+    expect(typedPath('I want to hear your thoughts and get some biblical thoughts', { entries: [1, 2] })).toBe('both');
+    expect(typedPath('I would like to hear your thoughts', { entries: [1, 2] })).toBe('thoughts');
+    // Ordinary sentences are not paths.
+    expect(typedPath('both of my parents work a lot', { entries: [1, 2] })).toBeNull();
+    expect(typedPath('I read the Bible every morning', { entries: [1, 2] })).toBeNull();
+  });
+
+  it('"All three" after the block brings an answer, not a guess', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'Work has been a lot lately with all the deadlines.', live());
+    r = await takeConversationTurn(r.state, 'My manager keeps adding projects without asking.', live());
+    r = await takeConversationTurn(r.state, 'idk', live());
+    r = await takeConversationTurn(r.state, 'yeah', live());
+    expect((r.output as { choices?: boolean }).choices).toBe(true);
+    r = await takeConversationTurn(r.state, 'All three', live(ANSWER));
+    expect(r.output.answer?.scripture).toEqual(['Ecclesiastes 3:1']);
+  });
+
+  it('"your thoughts and some biblical thoughts" after the Scripture offer brings an answer', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'I played soccer my whole life and wanted to go pro.', live());
+    r = await takeConversationTurn(r.state, 'Now it is over for me and I feel like it is time to move on but I do not know how.', live());
+    expect(r.state.bibleOffered).toBe(true);
+    r = await takeConversationTurn(r.state, 'I want to hear your thoughts and get some biblical thoughts', live(ANSWER));
+    expect(r.output.answer).toBeDefined();
+    expect((r.output as { synthesis?: unknown }).synthesis).toBeUndefined();
+  });
+});
+
+describe('from the full test run', () => {
+  it('"can I save Ecclesiastes 4:9-10" and "add Psalm 23" are save requests', () => {
+    expect(journalRequest('can I save Ecclesiastes 4:9-10')).toEqual({ content: 'Ecclesiastes 4:9-10' });
+    expect(journalRequest('add Ecclesiastes 4:9-10')).toEqual({ content: 'Ecclesiastes 4:9-10' });
+    expect(journalRequest('add 1 John 4:18 please')).toEqual({ content: '1 John 4:18' });
+    expect(journalRequest('add Psalm 23')).toEqual({ content: 'Psalm 23' });
+    expect(journalRequest('I want to add 3 more hours to my week')).toBeNull();
+    expect(journalRequest('add more 10 minutes of reading')).toBeNull();
+  });
+
+  it('"my mom passed away last year" gets no stock question', async () => {
+    const r = await takeConversationTurn(newSession('u', 's'), 'my mom passed away last year', live());
+    expect((r.output as { questionId?: string }).questionId).toBe('tender');
+  });
+
+  it('"I undestand about loniless" (typos) counts as "I already know"', () => {
+    expect(ALREADY_KNOW.test('I undestand about loniless')).toBe(true);
+  });
+
+  it('if the combined answer is rejected, the plain Bible answer still comes', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), 'Work has been a lot lately with all the deadlines.', live());
+    r = await takeConversationTurn(r.state, 'I want to hear your thoughts and some biblical thoughts', live('not json', 'not json', ANSWER));
+    expect(r.output.answer?.scripture).toEqual(['Ecclesiastes 3:1']);
+  });
+
+  it('"the only reason I am still alive" is never praised as a step forward', () => {
+    expect(replyPrompt([{ text: 'this hackathon is the only reason I am still alive' }])).toMatch(/only reason they are still alive/);
   });
 });

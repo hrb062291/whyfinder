@@ -19,7 +19,7 @@ import { acuteResponse, crisisContext } from '../constraints/acuteSignal.js';
 import { filterProse } from '../constraints/proseFilter.js';
 import { nextQuestion, recordServed } from '../constraints/questionGate.js';
 import {
-  ABOUT_APP_REPLY, SUPPORT_CHECKIN, SUPPORT_CONTINUE, asksAboutApp, wantsQuestionsBack, TENDER_LINE, evaluateSupport, isThin, isTender, saysNothingYet, strainWeight, supportCard,
+  ABOUT_APP_REPLY, SUPPORT_CHECKIN, SUPPORT_CONTINUE, asksAboutApp, wantsQuestionsBack, TENDER_LINE, evaluateSupport, isThin, isTender as isTenderBase, saysNothingYet, strainWeight, supportCard,
   type SupportCard, type SupportState,
 } from '../constraints/support.js';
 import { QUESTIONS } from '../content/questions.js';
@@ -62,8 +62,14 @@ export type ConvState = SessionState & {
 // ------------------------------------------------------------------ not repeating itself
 
 /** "I understand about community", "I know", "you said that already". */
+/** Loss is tender too: no stock question right after "my mom passed away". */
+const GRIEF = /\b(?:passed away|passed on|died|dying|death of|funeral|grieving|grief|lost my (?:mom|mother|dad|father|brother|sister|son|daughter|wife|husband|grand\w+|best friend|friend|baby)|miss(?:ing)? my (?:mom|mother|dad|father|brother|sister|grand\w+))\b/i;
+function isTender(text: string): boolean {
+  return isTenderBase(text) || GRIEF.test(text);
+}
+
 export const ALREADY_KNOW =
-  /\b(?:i (?:already )?(?:understand|know|get it|get that|got it|hear you)|(?:yeah|yes|ok|okay),? i know|you (?:already )?said that|i'?ve (?:already )?(?:heard|tried) that|you keep saying|that'?s what you said)\b/i;
+  /\b(?:i (?:already )?(?:understand|undestand|understnad|udnerstand|understan|know|get it|get that|got it|hear you)|(?:yeah|yes|ok|okay),? i know|you (?:already )?said that|i'?ve (?:already )?(?:heard|tried) that|you keep saying|that'?s what you said)\b/i;
 
 /** Advice the app gives. Re-suggesting one of these right after "I know" is repeating itself. */
 const SUGGESTION_TOPICS = /\b(community|church|small group|pastor|counselor|counselling|counseling|therapist|friend|friends|reach out|talk to someone|988|pray|prayer|journal|walk|exercise|sleep)\b/gi;
@@ -155,6 +161,11 @@ function keepStatement(reply: string): string | null {
 /** It cannot save anything. A reply that says it did is not true. */
 export const CLAIMS_SAVED = /\b(?:saved|noted|added|logged|recorded|written down|put)\b[^.?!]{0,40}\bjournal\b|\bjournal\b[^.?!]{0,25}\b(?:saved|noted|added)\b/i;
 
+/** A note of the passages already shown, so the next answer can choose others. */
+function sharedLine(refs: string[]): string | null {
+  return refs.length ? `Scripture passages already shared: ${refs.join(', ')}. Choose different passages next time unless they ask about one of these.` : null;
+}
+
 /** Keep the app's last few lines, newest last. */
 function remember(prior: string[], ...lines: (string | undefined | null)[]): string[] {
   const add = lines.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
@@ -217,6 +228,28 @@ const BIBLE_ABOUT_ME = 'What does the Bible say about what I have been going thr
 const THOUGHTS_ABOUT_ME =
   'Based only on what I have told you, share your honest thoughts on my situation: two or three tentative observations, clearly a guess and not a finding, kind "ai_inference".';
 const DEEPER_FALLBACK = 'What feels like it is underneath all of this for you?';
+const BOTH_ABOUT_ME =
+  'Based only on what I have told you, share your honest thoughts on my situation (two or three tentative observations, clearly a guess and not a finding), and what the Bible says about what I have been going through.';
+
+/**
+ * The paths can be typed, not only tapped: "all three", "both", "go deeper",
+ * "I want to hear your thoughts and some biblical thoughts".
+ */
+export function typedPath(text: string, s: { entries: unknown[]; choicesAt?: number; bibleOffered?: boolean }): ChoicePath | 'both' | null {
+  const t = text.toLowerCase();
+  const justAsked = (s.choicesAt !== undefined && s.choicesAt === s.entries.length) || Boolean(s.bibleOffered);
+  const thoughts = /\b(?:your|ur)\s+(?:honest\s+)?(?:thoughts?|take|opinion|perspective)\b|\bwhat do you think\b/.test(t);
+  const bible = /\b(?:bible|biblical|scripture|scriptural|god'?s word)\b/.test(t);
+  if (thoughts && bible) return 'both';
+  if (justAsked) {
+    if (/\b(?:all\s+(?:three|3|of them|of it)|both|everything)\b/.test(t)) return 'both';
+    if (/\bdeeper\b|\b(?:second|2nd) one\b/.test(t)) return 'deeper';
+    if (thoughts || /\b(?:first|1st) one\b/.test(t)) return 'thoughts';
+    if (bible || /\b(?:last|third|3rd) one\b/.test(t)) return 'bible';
+  }
+  if (thoughts && /\b(?:want|like|hear|share|give|tell|get|know)\b/.test(t)) return 'thoughts';
+  return null;
+}
 
 export interface ConvDeps {
   /** What takeTurn needs. */
@@ -252,6 +285,8 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - If their latest message shares a step forward (something they built, tried, finished or started; a new chapter; a strength from something they lost that they are now using somewhere new), begin by genuinely affirming it in specific words: name what they are doing and where it came from, for example that the resilience soccer gave them is showing up in the hackathon. Affirm what they are doing, never who they are. Vary the wording each time; do not open with "Congratulations" every time. Put the affirmation in its own full sentence, ending with a period, before any question.
 - Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks; refer to what they said naturally, and do not keep returning to the same earlier detail. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
+- If they ask to save or keep something, tell them they can type "add that to my journal". Never mention buttons, and never say you saved it.
+- If they say something is the only reason they are still alive or still here, do not praise it or call it a step forward. Gently and plainly ask how they are doing right now, and whether those thoughts are still with them.
 - Never describe the inner life of anyone but this person.
 - Never say you saved, noted or added anything to their journal. You cannot; only the app's journal buttons and commands can.
 - Never bring up suicide, self-harm, crisis lines or anything they said earlier about wanting to die, unless their latest message does. If they have moved on to something else, move on with them.
@@ -554,12 +589,17 @@ async function answerAboutThem(
   let answer: FaithAnswer | null = null;
   let why = 'no live model';
   if (deps.live) {
-    try {
-      const d = await generateAnswerDetailed(deps.live, question, s.entries, prior);
-      answer = d.answer;
-      if (d.reason) why = d.reason;
-    } catch (e) {
-      why = `threw: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+    // If the combined answer is rejected by the filters, the plain Bible answer
+    // is the fallback, so the person still gets what they asked for.
+    for (const q of question === BIBLE_ABOUT_ME ? [question] : [question, BIBLE_ABOUT_ME]) {
+      try {
+        const d = await generateAnswerDetailed(deps.live, q, s.entries, prior);
+        answer = d.answer;
+        if (d.reason) why = d.reason;
+      } catch (e) {
+        why = `threw: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+      }
+      if (answer) break;
     }
   }
   if (answer && deps.scripture && answer.scripture.length > 0) {
@@ -571,7 +611,7 @@ async function answerAboutThem(
   return {
     state: {
       ...s, ...extra, bibleOffered: false, currentQuestionId: 'followup', cardAt: s.entries.length,
-      said: remember(prior, shown.body, ...shown.questionsToConsider),
+      said: remember(prior, shown.body, ...shown.questionsToConsider, sharedLine(shown.scripture)),
     },
     output: { kind: 'question', text: AFTER_ANSWER, questionId: 'followup', answer: shown },
   };
@@ -634,6 +674,13 @@ export async function takeConversationTurn(
     }
   }
 
+  // A path typed instead of tapped.
+  if (phase >= 2 && (tier === 'none' || tier === 'mild') && s.entries.length >= 1) {
+    const path = typedPath(text, s);
+    if (path === 'both') return answerAboutThem(s, deps, BOTH_ABOUT_ME, { bibleOfferAt: s.entries.length });
+    if (path) return takeChoice(s, path, deps);
+  }
+
   // "What is the point of you?" gets a plain, fixed answer. No model call.
   if (phase >= 2 && (tier === 'none' || tier === 'mild') && asksAboutApp(text)) {
     const asked = s.currentQuestionId;
@@ -684,7 +731,7 @@ export async function takeConversationTurn(
       state: {
         ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }),
         bibleOffered: false, bibleOfferAt: s.entries.length, cardAt: s.entries.length,
-        said: remember(prior, shown.body, ...(answer?.questionsToConsider ?? []), ...(answer?.counsel ?? [])),
+        said: remember(prior, shown.body, ...(answer?.questionsToConsider ?? []), ...(answer?.counsel ?? []), sharedLine(answer?.scripture ?? [])),
       },
       output: {
         kind: 'question',
@@ -714,15 +761,19 @@ export async function takeConversationTurn(
   // Someone who said something hurting in the last few messages is not handed a
   // stock bank question ("Walk me through yesterday"). The follow-up stays on them.
   const recentHurt = phase >= 2 && !paused && heard.slice(-6).some((e) => isTender(e.text));
+  // Someone who just said something real at length gets a question about it,
+  // not a stock question from the list.
+  const substantial = text.trim().split(/\s+/).length >= 10;
   const followP: Promise<string | null> =
     phase >= 2 && live && (tier === 'none' || tier === 'mild') && !ev.showCard && !isThin(text)
-      && (paused || tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
+      && (paused || tender || recentHurt || substantial || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
       ? generateFollowUp(live, heard, prior).catch(() => null)
       : Promise.resolve(null);
   // A short answer ("idk") right after an answer card or a follow-up: stay on the
   // topic with a follow-up about the whole conversation, not a stock question.
   const thinFollowP: Promise<string | null> =
     phase >= 2 && live && tier === 'none' && !ev.showCard && isThin(text) && s.entries.length >= 1
+      && !heavy && !tender && !recentHurt
       && (s.followStreak ?? 0) < MAX_FOLLOW_STREAK + 1
       ? generateFollowUp(live, heard, prior).catch(() => null)
       : Promise.resolve(null);
@@ -808,7 +859,7 @@ export async function takeConversationTurn(
   const followUp = (await followP) ?? (await thinFollowP);
   const hasGuess = Boolean(synthesis);
   if (!paused && !hasGuess && output.kind === 'question') {
-    const canFollow = tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK;
+    const canFollow = tender || recentHurt || substantial || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK;
     const replyAsks = Boolean(output.reply && output.reply.trim().endsWith('?'));
     let text: string | null = null;
     if (replyAsks && !canFollow) {
@@ -854,6 +905,21 @@ export async function takeConversationTurn(
       output = { ...output, text: '' };
     }
     state = { ...state, followStreak: 0 };
+  }
+
+  // Soon after a crisis, a short answer ("idk") is not a cue to ask about work or
+  // anything else. Keep any kind words from the reply and simply stay with them.
+  if (heavy && isThin(text) && output.kind === 'question') {
+    const q = (output as { text?: string }).text;
+    if (output.reply && output.reply.trim().endsWith('?')) {
+      const kept = keepStatement(output.reply);
+      if (kept) output.reply = kept; else delete output.reply;
+    } else if (!output.reply && q && (output as { questionId?: string }).questionId === 'followup') {
+      const kept = keepStatement(q);
+      if (kept) output.reply = kept;
+    }
+    output = { ...output, text: tenderLine(prior), questionId: 'tender' };
+    state = { ...state, gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt }, currentQuestionId: 'tender', followStreak: 0 };
   }
 
   // A real, specific reply beats the canned acknowledgement. The canned line

@@ -54,9 +54,26 @@ function isBareCommand(sentence: string): boolean {
 const MIDDLE =
   /^(?:(?:i'?d like to|i would like to|i want(?:ed)? to|can you|could you|will you|can i|could i|may i|let me|i'?ll|please|pls|plz)\s+)?(?:add|ad|save|put|keep|write)\s+(.{1,200}?)\s+(?:to|in|into|on)\s+(?:my|the)\s+journal[\s.!?]*(?:please|thanks|thank you)?[\s.!?]*$/i;
 
+/**
+ * "Can I save that verse?", "add Colossians verse", "keep this passage". No word
+ * "journal" needed: asking to save a verse can only mean the journal. The whole
+ * message must be the request, so "I want to keep that verse in mind" is not one.
+ */
+const VERSE_SAVE =
+  /^(?:(?:can|could|may)\s+i\s+|(?:can|could|will)\s+you\s+|please\s+|i'?d like to\s+|i would like to\s+|i want(?:ed)? to\s+|let me\s+)?(?:save|keep|add|ad|store)\s+((?:(?:this|that|the|these|those)\s+)?(?:[a-z0-9:\-]+\s+){0,3}?(?:verses?|passages?|psalms?|scriptures?|proverbs?|bible verses?))(?:\s+(?:please|for me|for later))?[\s.!?]*$/i;
+
+/** "can I save Ecclesiastes 4:9-10", "add Psalm 23", "keep 1 John 4:18 please". */
+const REF_SAVE =
+  /^(?:(?:can|could|may)\s+i\s+|(?:can|could|will)\s+you\s+|please\s+|i'?d like to\s+|i would like to\s+|i want(?:ed)? to\s+|let me\s+)?(?:save|keep|add|ad|store)\s+((?:[1-3]\s*)?[a-z]{2,}(?:\s+of\s+[a-z]+)?\s+\d{1,3}(?::\d{1,3}(?:\s*[-\u2013]\s*\d{1,3})?)?)(?:\s+(?:please|for me|for later))?[\s.!?]*$/i;
+
 export function journalRequest(text: string): JournalRequest | null {
   const t = text.trim();
   if (!t) return null;
+
+  const vs = t.match(VERSE_SAVE);
+  if (vs) return { content: vs[1].trim() };
+  const rs = t.match(REF_SAVE);
+  if (rs) return { content: rs[1].trim() };
 
   const mid = t.match(MIDDLE);
   if (mid) {
@@ -85,7 +102,14 @@ export function journalRequest(text: string): JournalRequest | null {
 
   // "I miss my dad. Add this to my journal."
   const sentences = t.split(/(?<=[.!?])\s+/);
-  if (sentences.length > 1 && isBareCommand(sentences[sentences.length - 1])) {
+  const lastOne = sentences[sentences.length - 1];
+  const lastMid = sentences.length > 1 ? lastOne.trim().match(MIDDLE) : null;
+  // "Ecclesiastes 4:9-12. I would like to add this to my journal."
+  if (lastMid && /^(?:this|that|it|this one|that one)$/i.test(lastMid[1].trim())) {
+    const kept = sentences.slice(0, -1).join(' ').trim();
+    return { content: kept || null };
+  }
+  if (sentences.length > 1 && isBareCommand(lastOne)) {
     const kept = sentences.slice(0, -1).join(' ').trim();
     return { content: kept || null };
   }
@@ -94,3 +118,34 @@ export function journalRequest(text: string): JournalRequest | null {
 
 /** "this verse", "that psalm", "the passage": they mean the Scripture they just saw, not these words. */
 export const MEANS_VERSE = /^(?:this|that|the|these|those)\s+(?:\w+\s+)?(?:verses?|psalms?|psalsm|passages?|scriptures?|proverbs?|bible verse)\b/i;
+
+export type ShownPassage = { reference: string; version: string; text: string };
+
+const VERSE_WORD = /\s*\b(?:bible\s+)?(?:verses?|passages?|psalms?|scriptures?|proverbs?)\s*$/i;
+const squash = (x: string) => x.replace(/[.!?,\s]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Which passage(s) they mean, from what was shown (newest group first):
+ * "Colossians 3:23" -> that passage; "colossionons verse" -> the passage whose
+ * book starts the same way; "that verse" -> the latest passage(s) shown.
+ * Null when it is not about a passage at all.
+ */
+export function pickPassages(content: string | null, groups: ShownPassage[][]): ShownPassage[] | null {
+  if (!content || groups.length === 0) return null;
+  const c = squash(content);
+  const all = groups.flat();
+  if (/\d/.test(c) && c.length <= 40) {
+    const exact = all.find((p) => squash(p.reference) === c);
+    if (exact) return [exact];
+  }
+  const aboutVerse = MEANS_VERSE.test(content) || VERSE_WORD.test(content);
+  if (!aboutVerse) return null;
+  const name = c.replace(/^(?:this|that|the|these|those)\s+/, '').replace(VERSE_WORD, '').trim();
+  if (name && !/^(?:one|bible|last|first)$/.test(name) && name.length >= 3) {
+    const key = name.replace(/^(\d)\s*/, '$1 ').slice(0, 4);
+    const byBook = all.find((p) => p.reference.toLowerCase().startsWith(key));
+    if (byBook) return [byBook];
+    if (!MEANS_VERSE.test(content)) return null;
+  }
+  return groups[0];
+}
