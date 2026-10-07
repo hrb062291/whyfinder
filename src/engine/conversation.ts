@@ -855,10 +855,14 @@ export async function takeConversationTurn(
     const recent = state.entries.slice(-2);
     const stalled = recent.length === 2
       && recent.every((e) => isThin(e.text) || e.text.trim().split(/\s+/).length <= 4);
+    // A fitting moment in the last few messages counts, so an opener like "it's
+    // over for me and I don't know how to move on" still gets the offer once a
+    // guess card or the first turn is out of the way.
+    const fitting = state.entries.slice(-3).some((e) => FITTING_MOMENT.test(e.text));
     if (since >= 5 || (stalled && since >= 3)) {
       output.choices = true;
       state = { ...state, choicesAt: state.entries.length };
-    } else if (sinceBible >= 4 && (FITTING_MOMENT.test(text) || tier === 'mild')) {
+    } else if (sinceBible >= 4 && (fitting || tier === 'mild')) {
       if (output.reply && output.reply.trim().endsWith('?')) {
         const kept = withoutQuestion(output.reply);
         if (kept) output.reply = kept; else delete output.reply;

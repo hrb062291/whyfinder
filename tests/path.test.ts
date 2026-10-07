@@ -80,6 +80,21 @@ describe('offering Scripture in the chat', () => {
     expect(r.state.bibleOffered).toBe(false);
   });
 
+  it('an opener about moving on still gets the offer a turn or two later', async () => {
+    const msgs = [
+      "I played soccer my whole life but it's over for me and I don't know how to move on",
+      'my friends',
+      "I'm using the resilience soccer taught me in a hackathon now",
+    ];
+    let r = await takeConversationTurn(newSession('u', 's'), msgs[0], live());
+    let asked = false;
+    for (const m of msgs.slice(1)) {
+      r = await takeConversationTurn(r.state, m, live());
+      if (r.state.bibleOffered) asked = true;
+    }
+    expect(asked).toBe(true);
+  });
+
   it('"no" is respected and the conversation carries on', async () => {
     let r = await takeConversationTurn(newSession('u', 's'), 'I played soccer my whole life and wanted to go pro.', live());
     r = await takeConversationTurn(r.state, 'Now it is over for me and I feel like it is time to move on but I do not know how.', live());
