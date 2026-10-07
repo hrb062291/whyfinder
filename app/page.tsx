@@ -34,6 +34,7 @@ type Turn =
   | { kind: 'notice'; text: string }
   | { kind: 'welcome'; text: string }
   | { kind: 'you'; text: string }
+  | { kind: 'people'; resources: { name: string; contact: string; detail: string }[] }
   | { kind: 'verse'; verse: { reference: string; text: string; version: string; versionTitle: string; copyright: string; link?: string } }
   | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] }
   | { kind: 'answer'; answer: Answer }
@@ -395,8 +396,13 @@ export default function Home() {
           ...(o.response.offersHuman ? [{ kind: 'app' as const, text: o.response.offersHuman }] : []),
           ...(o.response.verse ? [{ kind: 'verse' as const, verse: o.response.verse }] : []),
           ...(o.response.closing ? [{ kind: 'app' as const, text: o.response.closing }] : []),
+          // "Here are people that care about you": so the people are right here, in the chat.
+          ...((o.response.level ?? 1) >= 2 && o.response.resources
+            ? [{ kind: 'people' as const, resources: o.response.resources }] : []),
         ]);
-        setSheet('crisis');
+        // The pop-up opens the first two times. From the third time on they have already seen it,
+        // and the people are listed right in the chat instead.
+        if ((o.response.level ?? 1) < 3) setSheet('crisis');
       } else {
         const next: Turn[] = [];
         if (r.degraded) {
@@ -459,6 +465,23 @@ export default function Home() {
               {t.kind === 'welcome' && <p className="app-text">{t.text}</p>}
               {t.kind === 'notice' && <p className="reflect-note">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
+              {t.kind === 'people' && (
+                <div className="synthesis">
+                  <div className="syn-kind">People who care and want to help</div>
+                  <div className="syn-evidence">
+                    <div className="syn-evidence-label">Someone who knows you</div>
+                    <p className="quote">A pastor, a counselor, a friend or family member. One honest sentence is enough to start: &ldquo;I have been struggling and I do not want to do it alone.&rdquo;</p>
+                  </div>
+                  <div className="syn-evidence">
+                    <div className="syn-evidence-label">Right now, free, any time</div>
+                    {t.resources.map((r) => (
+                      <p className="quote" key={r.name}>
+                        <strong>{r.name}</strong>: {r.contact}. {r.detail}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
               {t.kind === 'verse' && (
                 <div className="synthesis">
                   <div className="syn-kind">What the Bible says</div>
