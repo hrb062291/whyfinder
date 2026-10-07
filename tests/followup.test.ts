@@ -37,12 +37,17 @@ describe('follow-ups in the conversation', () => {
       { turn: turnDeps, live: fixtureProvider(['Nice work.', 'What was the breaker like to swap?']) });
     expect((r2.output as { questionId: string }).questionId).toBe('followup');
     expect(r2.state.followStreak).toBe(2);
-    // After two in a row, the bank gets a turn and the count starts again.
-    const r3 = await takeConversationTurn(r2.state, 'Tom held the flashlight and I did the wiring.',
+    const r3a = await takeConversationTurn(r2.state, 'The breaker was stiff and Tom had to find the right screwdriver.',
+      { turn: turnDeps, live: fixtureProvider(['That sounds fiddly.', 'What was it like finding the screwdriver with Tom?']) });
+    const r3b = await takeConversationTurn(r3a.state, 'We laughed about it and then the lights finally came on.',
+      { turn: turnDeps, live: fixtureProvider(['The lights coming on sounds satisfying.', 'What did you two do once the lights came on?']) });
+    expect(r3b.state.followStreak).toBe(4);
+    // After four in a row, the bank gets a turn and the count starts again.
+    const r3 = await takeConversationTurn(r3b.state, 'Tom held the flashlight and I did the wiring.',
       { turn: turnDeps, live: fixtureProvider(['Good teamwork.', 'What did the flashlight help with?']) });
     expect((r3.output as { questionId: string }).questionId).not.toBe('followup');
     expect(r3.state.followStreak).toBe(0);
-    expect(r3.state.entries).toHaveLength(3);
+    expect(r3.state.entries).toHaveLength(5);
   });
 
   it('never follows up on a thin answer or a struggling one', async () => {
