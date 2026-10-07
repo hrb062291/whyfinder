@@ -678,6 +678,49 @@ function journalText(journal: Journal, entries: SavedEntry[], verses: Verse[]): 
   return out.join('\n');
 }
 
+/**
+ * The journal as a PDF. Opens the device's own print window on a clean page,
+ * where the person picks "Save as PDF". No library and no network: it is built
+ * here, from what is already on this device.
+ */
+function printJournal(text: string) {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const lines = text.split('\n');
+  const [title, ...rest] = lines;
+  const body = rest.map((l) => {
+    const t = l.trim();
+    if (!t) return '';
+    if (/^[A-Z][A-Z' ]{3,}$/.test(t)) return `<h2>${esc(t)}</h2>`;
+    if (/^because I said:/.test(t)) return `<p class="q">${esc(t)}</p>`;
+    return `<p>${esc(t)}</p>`;
+  }).join('\n');
+  const stamp = new Date().toISOString().slice(0, 10);
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>WhyFinder journal ${stamp}</title>
+<style>
+  @page { margin: 22mm 20mm; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1f1f1f; line-height: 1.5; font-size: 12pt; }
+  h1 { font-size: 22pt; margin: 0 0 4pt; }
+  h2 { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 9.5pt; letter-spacing: .08em; color: #555; margin: 20pt 0 6pt; border-bottom: 1px solid #ddd; padding-bottom: 3pt; }
+  p { margin: 0 0 6pt; white-space: pre-wrap; }
+  p.q { color: #555; font-style: italic; margin-left: 14pt; }
+  .meta { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 9pt; color: #777; }
+</style></head><body><h1>${esc(title)}</h1>${body.replace(/<p>(Exported [^<]*|Kept on this device[^<]*)<\/p>/g, '<p class="meta">$1</p>')}</body></html>`;
+
+  const frame = document.createElement('iframe');
+  Object.assign(frame.style, { position: 'fixed', right: '0', bottom: '0', width: '0', height: '0', border: '0' });
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument;
+  if (!doc || !frame.contentWindow) { frame.remove(); downloadText(text); return; }
+  doc.open(); doc.write(html); doc.close();
+  const done = () => window.setTimeout(() => frame.remove(), 500);
+  frame.contentWindow.addEventListener('afterprint', done);
+  window.setTimeout(() => {
+    frame.contentWindow?.focus();
+    frame.contentWindow?.print();
+    window.setTimeout(done, 60_000);
+  }, 250);
+}
+
 function downloadText(text: string) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
@@ -835,9 +878,10 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onR
             if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => downloadText(text));
             else downloadText(text);
           }}>{copied ? 'Copied' : 'Copy'}</button>
-          <button className="btn" onClick={() => downloadText(journalText(journal, entries, uniqueVerses))}>Download</button>
+          <button className="btn" onClick={() => printJournal(journalText(journal, entries, uniqueVerses))}>Save as PDF</button>
+          <button className="btn" onClick={() => downloadText(journalText(journal, entries, uniqueVerses))}>Download .txt</button>
         </div>
-        <span className="j-foot-note">Your journal as plain text, to keep or to bring to someone. Nothing is sent anywhere.</span>
+        <span className="j-foot-note">To keep or to bring to someone. &ldquo;Save as PDF&rdquo; opens your print window: choose Save as PDF there. Nothing is sent anywhere.</span>
         <button className="j-link" onClick={() => { if (window.confirm('Erase this conversation and your journal from this device? This cannot be undone.')) onClear(); }}>Erase everything on this device</button>
         <span className="j-foot-note">Erases the conversation and this journal. To clear only the chat, use &ldquo;Clear chat&rdquo; at the top.</span>
       </div>
