@@ -14,7 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { Synthesis } from '../src/types/index.js';
-import { MEANS_VERSE, journalRequest } from '../src/engine/journalRequest.js';
+import { journalRequest, pickPassages } from '../src/engine/journalRequest.js';
 import './journal.css';
 
 type Answer = {
@@ -332,17 +332,12 @@ export default function Home() {
   function saveToJournal(text: string, content: string | null) {
     const before = [...turns].reverse().find((t) => t.kind === 'you' && !journalRequest(t.text)) as
       { kind: 'you'; text: string } | undefined;
-    // "Can I keep this verse in my journal?" means the verse they just saw.
-    let verse: string | null = null;
-    if (content && MEANS_VERSE.test(content)) {
-      for (let i = turns.length - 1; i >= 0 && !verse; i--) {
-        const t = turns[i];
-        if (t.kind === 'verse') verse = `${t.verse.reference} (${t.verse.version}) ${t.verse.text}`;
-        else if (t.kind === 'answer' && t.answer.passages && t.answer.passages.length > 0) {
-          verse = t.answer.passages.map((p) => `${p.reference} (${p.version}) ${p.text}`).join('\n');
-        }
-      }
-    }
+    // "Can I keep this verse?", "add Colossians verse", "add Colossians 3:23 to my
+    // journal": the passage they saw, with its words, not just the name.
+    const groups = [...turns].reverse().flatMap((t) =>
+      t.kind === 'verse' ? [[t.verse]] : t.kind === 'answer' && t.answer.passages?.length ? [t.answer.passages] : []);
+    const picked = pickPassages(content, groups);
+    const verse: string | null = picked ? picked.map((p) => `${p.reference} (${p.version}) ${p.text}`).join('\n') : null;
     const keep = (verse ?? content ?? before?.text ?? '').trim();
     const clip = (s: string) =>
       (s.length > 140 ? `${s.slice(0, 140).replace(/\s+\S*$/, '')}…` : s).replace(/[.!?]+$/, '');
