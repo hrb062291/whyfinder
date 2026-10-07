@@ -24,6 +24,14 @@ describe('journalRequest', () => {
     expect(journalRequest('remember this: rest is not laziness')).toEqual({ content: 'rest is not laziness' });
   });
 
+  it('keeps what sits between the verb and "journal", typos included', () => {
+    expect(journalRequest('id like to ad first Peter to my journal')).toEqual({ content: 'first Peter' });
+    expect(journalRequest("I'd like to add 1 Peter 5:7 to my journal")).toEqual({ content: '1 Peter 5:7' });
+    expect(journalRequest('can you put Psalm 23 in my journal please')).toEqual({ content: 'Psalm 23' });
+    expect(journalRequest("i'd like to add this to my journal")).toEqual({ content: null });
+    expect(journalRequest('I want to put my thoughts in my journal more often')).toBeNull();
+  });
+
   it('keeps the sentences before a trailing command', () => {
     expect(journalRequest('I miss my dad. Add this to my journal.')).toEqual({ content: 'I miss my dad.' });
     expect(journalRequest('Psalm 34:18 gives me comfort. This is important to me.')).toEqual({ content: 'Psalm 34:18 gives me comfort.' });

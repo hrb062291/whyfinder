@@ -133,6 +133,18 @@ function tenderLine(prior: string[]): string {
   return all.find((t) => !prior.slice(-3).includes(t)) ?? all[0];
 }
 
+const CONTINUE_MORE = [
+  'I am still here. Say whatever comes next, or go back to the questions when you are ready.',
+  'Take whatever time you need. You can keep going here or return to the questions.',
+];
+function continueLine(prior: string[]): string {
+  const all = [SUPPORT_CONTINUE, ...CONTINUE_MORE];
+  return all.find((t) => !prior.slice(-3).includes(t)) ?? all[0];
+}
+
+/** It cannot save anything. A reply that says it did is not true. */
+export const CLAIMS_SAVED = /\b(?:saved|noted|added|logged|recorded|written down|put)\b[^.?!]{0,40}\bjournal\b|\bjournal\b[^.?!]{0,25}\b(?:saved|noted|added)\b/i;
+
 /** Keep the app's last few lines, newest last. */
 function remember(prior: string[], ...lines: (string | undefined | null)[]): string[] {
   const add = lines.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
@@ -204,6 +216,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
+- Never say you saved, noted or added anything to their journal. You cannot; only the app's journal buttons and commands can.
 - Only if the message is empty of anything concrete, reply with exactly: NONE
 Return only the sentences, no JSON.${priorBlock(prior, latest)}`;
 }
@@ -342,6 +355,7 @@ export async function generateReply(
   )).trim();
   if (!raw || /^none\b/i.test(raw)) return null;
   if (repeatsItself(raw, prior, entries[entries.length - 1]?.text ?? '')) return null;
+  if (CLAIMS_SAVED.test(raw)) return null;
   return filterProse(raw, { maxChars: 400 }).pass ? raw : null;
 }
 
@@ -371,6 +385,7 @@ export async function generateFollowUp(
     entries.map((e) => ({ role: 'user', content: e.text })), followUpPrompt(entries, prior),
   )).trim().replace(/^["“]|["”]$/g, '');
   if (repeatsItself(raw, prior, entries[entries.length - 1]?.text ?? '')) return null;
+  if (CLAIMS_SAVED.test(raw)) return null;
   if (!raw || /^none\b/i.test(raw)) return null;
   if (raw.length > 180 || (raw.match(/\?/g) ?? []).length !== 1 || !raw.endsWith('?')) return null;
   if (/^why\b/i.test(raw) || /\b(?:purpose|calling)\b/i.test(raw)) return null;
@@ -625,6 +640,16 @@ export async function takeConversationTurn(
 
   const reply = await replyP;
   if (reply) output.reply = reply;
+  // Paused with no follow-up: if the reply already asks something, that is the
+  // question. Otherwise the stock line, but never the same one twice in a row.
+  if (paused && !pausedFollow && !ev.showCard) {
+    if (output.reply && output.reply.trim().endsWith('?')) {
+      output = { ...output, text: output.reply };
+      delete output.reply;
+    } else {
+      output = { ...output, text: continueLine(prior) };
+    }
+  }
 
   // The model is allowed to say "nothing has surfaced yet". That is honest, but
   // it is not a guess, so it never becomes a card with a "Keep this" button.

@@ -45,9 +45,24 @@ function isBareCommand(sentence: string): boolean {
   return false;
 }
 
+/**
+ * "I'd like to add first Peter to my journal", "can you put Psalm 23 in my journal".
+ * What to keep sits between the verb and "journal". Typos like "ad" count. The
+ * message must end at "journal", so "I want to put my thoughts in my journal
+ * more often" is something they are saying, not a request.
+ */
+const MIDDLE =
+  /^(?:(?:i'?d like to|i would like to|i want(?:ed)? to|can you|could you|will you|please|pls|plz)\s+)?(?:add|ad|save|put|keep|write)\s+(.{1,200}?)\s+(?:to|in|into|on)\s+(?:my|the)\s+journal[\s.!?]*(?:please|thanks|thank you)?[\s.!?]*$/i;
+
 export function journalRequest(text: string): JournalRequest | null {
   const t = text.trim();
   if (!t) return null;
+
+  const mid = t.match(MIDDLE);
+  if (mid) {
+    const what = mid[1].trim();
+    return { content: /^(?:this|that|it|this one|that one|what i said)$/i.test(what) ? null : what };
+  }
 
   // "add to my journal: ..." or "add this to my journal"
   for (const re of LEADING) {
