@@ -307,6 +307,17 @@ const DIRECT_FAITH_QUESTION =
 const DIRECTION_ASK =
   /\b(?:give me (?:some |any )?(?:direction|guidance)|(?:not|n'?t) giving me (?:any )?(?:direction|guidance|answers?|advice)|need (?:some )?(?:direction|guidance)|where do i (?:start|begin)|(?:any|some) (?:direction|guidance))\b/i;
 
+/** Asking what Scripture says, in the many ways people phrase it, with or without a question mark. */
+export const BIBLE_ASK = new RegExp([
+  "\\bwhat (?:does |do |did )?(?:the )?(?:bible|scripture|scriptures|god|jesus|god'?s word) (?:says?|teach(?:es)?|think|thinks|have to say|tells? us)\\b",
+  "\\b(?:is|are) there (?:anything|something|any verses?|a verse|verses|a passage|passages|any passages?) (?:in|from) (?:the )?(?:bible|scripture|scriptures)\\b",
+  "\\b(?:does|did|do) (?:the )?(?:bible|scripture|scriptures) (?:say|talk|speak|mention|have)\\b",
+  "\\b(?:a |any |some )?(?:bible )?verses? (?:about|for|on) \\w+",
+  "\\b(?:biblical|christian) (?:view|perspective|take) (?:on|of)\\b",
+  "\\bwhat(?:'s| is) (?:the |my )?next step\\b",
+  "\\bnext step (?:i|that i) should\\b",
+].join('|'), 'i');
+
 const SHORT_DIRECTION =
   /^(?:so |ok |okay )?(?:what (?:should|can|do) i do(?: now| then)?|what now|help me|help|where do i (?:start|begin)|what next)\W*$/i;
 
@@ -321,6 +332,9 @@ export function isAskingUs(text: string, hasContext = false): boolean {
   if (t.includes('?') && sentences.some((x) => INTERROGATIVE.test(x)) && FAITH_OR_DIRECTION.test(t)) return true;
   // Asking for direction is a question for us even when the person is struggling.
   if (DIRECTION_ASK.test(t)) return true;
+  // "Is there anything in the Bible about…", "I want to know what the Bible says
+  // about what I said": asking for Scripture is answered, struggling or not.
+  if (BIBLE_ASK.test(t)) return true;
   if (strained) return false;
   if (EXPLAIN_REQUEST.test(t) && FAITH_OR_DIRECTION.test(t)) return true;
   if (DIRECT_FAITH_QUESTION.test(t)) return true;
@@ -709,6 +723,12 @@ export async function takeConversationTurn(
       const kept = withoutQuestion(output.reply);
       if (kept) output.reply = kept; else delete output.reply;
     }
+    // The guess card ends with "Does that fit?". A stock question under it is a
+    // second question, and it reads as not listening. The bank waits.
+    if (hasGuess && !paused && output.kind === 'question') {
+      state = { ...state, gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt }, currentQuestionId: 'guess' };
+      output = { ...output, text: '' };
+    }
     state = { ...state, followStreak: 0 };
   }
 
@@ -723,7 +743,7 @@ export async function takeConversationTurn(
 
   // One experiment per session, after the first synthesis is shown, and never
   // to someone the support card has just been shown to.
-  if (phase >= 3 && tier === 'none' && !tender && synthesis && state.synthesesOffered.length > before
+  if (phase >= 3 && tier === 'none' && !tender && !recentHurt && !heavy && synthesis && state.synthesesOffered.length > before
       && !state.support?.shown && (state.experiments ?? []).length === 0) {
     const x: Experiment = pickExperiment(state.entries as Entry[]);
     const o = offer(state, x, now);

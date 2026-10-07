@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { journalRequest } from '../src/engine/journalRequest.js';
+import { MEANS_VERSE, journalRequest } from '../src/engine/journalRequest.js';
 
 describe('journalRequest', () => {
   it.each([
@@ -30,6 +30,14 @@ describe('journalRequest', () => {
     expect(journalRequest('can you put Psalm 23 in my journal please')).toEqual({ content: 'Psalm 23' });
     expect(journalRequest("i'd like to add this to my journal")).toEqual({ content: null });
     expect(journalRequest('I want to put my thoughts in my journal more often')).toBeNull();
+  });
+
+  it('"can I keep this verse in my journal?" is a request about the verse', () => {
+    expect(journalRequest('can I keep this psalsm verse in my journal?')).toEqual({ content: 'this psalsm verse' });
+    expect(MEANS_VERSE.test('this psalsm verse')).toBe(true);
+    expect(MEANS_VERSE.test('that passage')).toBe(true);
+    expect(MEANS_VERSE.test('first Peter')).toBe(false);
+    expect(journalRequest('may I save Psalm 23 in my journal')).toEqual({ content: 'Psalm 23' });
   });
 
   it('keeps the sentences before a trailing command', () => {

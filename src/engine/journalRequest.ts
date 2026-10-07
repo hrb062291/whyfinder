@@ -52,7 +52,7 @@ function isBareCommand(sentence: string): boolean {
  * more often" is something they are saying, not a request.
  */
 const MIDDLE =
-  /^(?:(?:i'?d like to|i would like to|i want(?:ed)? to|can you|could you|will you|please|pls|plz)\s+)?(?:add|ad|save|put|keep|write)\s+(.{1,200}?)\s+(?:to|in|into|on)\s+(?:my|the)\s+journal[\s.!?]*(?:please|thanks|thank you)?[\s.!?]*$/i;
+  /^(?:(?:i'?d like to|i would like to|i want(?:ed)? to|can you|could you|will you|can i|could i|may i|let me|i'?ll|please|pls|plz)\s+)?(?:add|ad|save|put|keep|write)\s+(.{1,200}?)\s+(?:to|in|into|on)\s+(?:my|the)\s+journal[\s.!?]*(?:please|thanks|thank you)?[\s.!?]*$/i;
 
 export function journalRequest(text: string): JournalRequest | null {
   const t = text.trim();
@@ -91,3 +91,6 @@ export function journalRequest(text: string): JournalRequest | null {
   }
   return null;
 }
+
+/** "this verse", "that psalm", "the passage": they mean the Scripture they just saw, not these words. */
+export const MEANS_VERSE = /^(?:this|that|the|these|those)\s+(?:\w+\s+)?(?:verses?|psalms?|psalsm|passages?|scriptures?|proverbs?|bible verse)\b/i;
