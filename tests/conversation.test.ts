@@ -169,8 +169,13 @@ describe('takeConversationTurn', () => {
     const deps = { turn: { ...turnDeps, provider: fixtureProvider([GOOD_SYNTH]) } };
     let r = await takeConversationTurn(newSession('u', 's'), 'I spent most of Saturday rewiring the shed with Tom.', deps);
     r = await takeConversationTurn(r.state, 'At work people keep coming to me to explain the billing system.', deps);
-    expect(r.output.experiment).toBeDefined();
+    // Never on the same screen as the guess card.
+    expect((r.output as { synthesis?: unknown }).synthesis).toBeDefined();
+    expect(r.output.experiment).toBeUndefined();
     r = await takeConversationTurn(r.state, 'Another thing happened with the garden this week and it went well.', deps);
+    expect(r.output.experiment).toBeDefined();
+    expect((r.output as { synthesis?: unknown }).synthesis).toBeUndefined();
+    r = await takeConversationTurn(r.state, 'My neighbor asked me to help with his fence next weekend too.', deps);
     expect(r.output.experiment).toBeUndefined();
   });
 

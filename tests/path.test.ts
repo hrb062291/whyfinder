@@ -21,7 +21,7 @@ describe('affirming a step forward', () => {
 });
 
 describe('the "where next?" block', () => {
-  it('appears after about five messages', async () => {
+  it('appears after a long stretch with no card', async () => {
     let r = await takeConversationTurn(newSession('u', 's'), 'I spent Saturday fixing the fence with my neighbor Tom.', live());
     let shownAt = -1;
     const msgs = [
@@ -36,15 +36,19 @@ describe('the "where next?" block', () => {
       r = await takeConversationTurn(r.state, msgs[i], live());
       if ((r.output as { choices?: boolean }).choices && shownAt < 0) shownAt = r.state.entries.length;
     }
-    expect(shownAt).toBeGreaterThanOrEqual(5);
-    expect(shownAt).toBeLessThanOrEqual(6);
+    expect(shownAt).toBe(7);
   });
 
   it('appears sooner when the answers get short', async () => {
     let r = await takeConversationTurn(newSession('u', 's'), 'Work has been a lot lately with all the deadlines.', live());
+    r = await takeConversationTurn(r.state, 'My manager keeps adding projects without asking.', live());
     r = await takeConversationTurn(r.state, 'idk', live());
+    expect((r.output as { choices?: boolean }).choices).toBeUndefined();
     r = await takeConversationTurn(r.state, 'yeah', live());
-    expect((r.output as { choices?: boolean }).choices).toBe(true);
+    const o = r.output as { choices?: boolean; text?: string };
+    expect(o.choices).toBe(true);
+    // The block is the question: no second question on the screen with it.
+    expect(o.text).toBe('');
   });
 
   it('never appears right after a crisis', async () => {
@@ -109,5 +113,66 @@ describe('offering Scripture in the chat', () => {
     r = await takeConversationTurn(r.state, 'Actually I started a business with a friend last month.', live());
     expect(r.output.answer).toBeUndefined();
     expect(r.state.bibleOffered).toBe(false);
+  });
+});
+
+describe('the conversation flows: one card at a time', () => {
+  const opener = "I played soccer my whole life but it's over for me and I don't know how to move on";
+  const GUESS = JSON.stringify({
+    body: 'Soccer and the team seem tied together for you. Worth exploring whether that matters?',
+    evidence: ['e1', 'e2'], concreteNouns: ['soccer', 'team'], kind: 'ai_inference',
+  });
+  const AFFIRM = 'Taking the resilience soccer gave you into a hackathon is a real step forward; are there people around you there?';
+
+  it('the Scripture offer keeps the affirmation', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), opener, live());
+    r = await takeConversationTurn(r.state, 'my friends', live());
+    if (!r.state.bibleOffered) {
+      r = await takeConversationTurn(r.state, "I'm using the resilience soccer taught me in a hackathon now", live(AFFIRM, 'NONE'));
+    }
+    expect(r.state.bibleOffered).toBe(true);
+    if (r.state.entries.length === 3) {
+      expect(r.output.reply).toMatch(/real step forward\.$/);
+      expect((r.output as { text?: string }).text).toMatch(/Bible|Scripture/);
+    }
+  });
+
+  it('after a Bible answer, a short reply stays on the topic and no block follows it', async () => {
+    let r = await takeConversationTurn(newSession('u', 's'), opener, live());
+    r = await takeConversationTurn(r.state, 'my friends', live());
+    if (!r.state.bibleOffered) r = await takeConversationTurn(r.state, "I'm using the resilience soccer taught me in a hackathon now", live());
+    expect(r.state.bibleOffered).toBe(true);
+    r = await takeConversationTurn(r.state, 'yes', live(ANSWER));
+    expect(r.output.answer).toBeDefined();
+    r = await takeConversationTurn(r.state, 'idk', live('NONE', 'Which of your friends from soccer do you still talk to?'));
+    let o = r.output as { text?: string; choices?: boolean };
+    expect(o.text).toBe('Which of your friends from soccer do you still talk to?');
+    expect(o.choices).toBeUndefined();
+    r = await takeConversationTurn(r.state, 'ifk', live());
+    o = r.output as { text?: string; choices?: boolean };
+    expect(o.choices).toBeUndefined();
+    expect(o.text).not.toBe('Which of your friends from soccer do you still talk to?');
+  });
+
+  it('after the guess, a talk about moving on gets the Scripture offer, not the experiment', async () => {
+    const deps = (...r: string[]) => ({ turn: { ...turnDeps, provider: fixtureProvider([GUESS]) }, live: fixtureProvider(r.length ? r : ['NONE', 'NONE']) });
+    let r = await takeConversationTurn(newSession('u', 's'), opener, deps());
+    r = await takeConversationTurn(r.state, 'My friends from the team, we did everything together.', deps());
+    expect((r.output as { synthesis?: unknown }).synthesis).toBeDefined();
+    r = await takeConversationTurn(r.state, "I'm using the resilience soccer taught me in a hackathon now", deps(AFFIRM, 'NONE'));
+    expect(r.output.experiment).toBeUndefined();
+    expect(r.state.bibleOffered).toBe(true);
+  });
+
+  it('never two cards on one screen', async () => {
+    const msgs = [opener, 'my friends', "I'm using the resilience soccer taught me in a hackathon now", 'idk', 'yeah',
+      'we are building an app', 'it helps people think', 'ok', 'sure', 'maybe', 'I guess'];
+    let r = await takeConversationTurn(newSession('u', 's'), msgs[0], live());
+    for (const m of msgs.slice(1)) {
+      r = await takeConversationTurn(r.state, m, live());
+      const o = r.output as { synthesis?: unknown; experiment?: unknown; choices?: boolean; answer?: unknown };
+      const cards = [o.synthesis, o.experiment, o.choices, o.answer, r.state.bibleOffered || undefined].filter(Boolean).length;
+      expect(cards).toBeLessThanOrEqual(1);
+    }
   });
 });

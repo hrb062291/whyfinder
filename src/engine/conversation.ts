@@ -49,6 +49,8 @@ export type ConvState = SessionState & {
   crisisCount?: number;
   /** Entry count when the "choose your path" block was last shown. */
   choicesAt?: number;
+  /** Entry count when the last card (guess, answer, block, experiment, Scripture offer) was shown. One at a time, with room between. */
+  cardAt?: number;
   /** Entry count when the app last offered Scripture in the chat. */
   bibleOfferAt?: number;
   /** True right after the app asked "Would it help to see what the Bible says?" */
@@ -131,6 +133,23 @@ const CONTINUE_MORE = [
 function continueLine(prior: string[]): string {
   const all = [SUPPORT_CONTINUE, ...CONTINUE_MORE];
   return all.find((t) => !prior.slice(-3).includes(t)) ?? all[0];
+}
+
+const OPEN_MORE = [
+  'What feels most important to you about all of this right now?',
+  'Where would you like to pick up from here?',
+  'What else has been on your mind about it?',
+];
+function openLine(prior: string[]): string {
+  return OPEN_MORE.find((t) => !prior.includes(t)) ?? OPEN_MORE[0];
+}
+
+/** Drop the trailing question, keeping what came before it. Splits at a sentence end, or at ";" or a dash. */
+function keepStatement(reply: string): string | null {
+  const kept = withoutQuestion(reply);
+  if (kept) return kept;
+  const m = reply.trim().match(/^(.{20,}?)\s*[;\u2014]\s*[^;\u2014.!?]*\?$/s);
+  return m ? `${m[1].trim().replace(/[,]$/, '')}.` : null;
 }
 
 /** It cannot save anything. A reply that says it did is not true. */
@@ -230,7 +249,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Name something specific they just told you, in their own words, so they feel heard.
 - If something they said EARLIER connects to it, you may set the two side by side as a question, using their own words: "Earlier you mentioned the billing system; does explaining things come up here too?" Never say one caused the other.
 - Warm and plain, like a thoughtful friend. No advice, no diagnosis, no explaining why they feel or act this way.
-- If their latest message shares a step forward (something they built, tried, finished or started; a new chapter; a strength from something they lost that they are now using somewhere new), begin by genuinely affirming it in specific words: name what they are doing and where it came from, for example that the resilience soccer gave them is showing up in the hackathon. Affirm what they are doing, never who they are. Vary the wording each time; do not open with "Congratulations" every time.
+- If their latest message shares a step forward (something they built, tried, finished or started; a new chapter; a strength from something they lost that they are now using somewhere new), begin by genuinely affirming it in specific words: name what they are doing and where it came from, for example that the resilience soccer gave them is showing up in the hackathon. Affirm what they are doing, never who they are. Vary the wording each time; do not open with "Congratulations" every time. Put the affirmation in its own full sentence, ending with a period, before any question.
 - Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
@@ -256,7 +275,9 @@ export function followUpPrompt(entries: { text: string }[], prior: string[] = []
 What this person has told you so far, oldest first:
 ${said(entries)}
 
-Ask ONE short follow-up question about something concrete in their MOST RECENT message: a thing they did, a person, a place, a task. The kind of question a curious friend asks to hear more.
+${isThin(latest) && entries.length > 1
+  ? `Their latest reply was short ("${latest.trim().slice(0, 20)}"). That is fine; do not ask them to explain it. Ask ONE short, easy-to-answer question about something concrete from earlier in what they told you, picking up the thread they were on: a thing they did, a person, a place. Never switch to a new topic.`
+  : 'Ask ONE short follow-up question about something concrete in their MOST RECENT message: a thing they did, a person, a place, a task. The kind of question a curious friend asks to hear more.'}
 
 Aim the question at ${aim}
 
@@ -267,7 +288,7 @@ Aim the question at ${aim}
 - Sound natural. Do not recite their earlier words back in quotation marks; refer to them lightly, the way a person would.
 - Under 140 characters. One question mark. No advice and no explanation.
 - Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God unless they did.
-- If their message has nothing concrete to ask about, reply with exactly: NONE
+- If there is nothing concrete to ask about, reply with exactly: NONE
 Return only the question.${priorBlock(prior, latest)}`;
 }
 
@@ -426,7 +447,8 @@ export async function generateFollowUp(
   if (/^why\b/i.test(raw) || /\b(?:purpose|calling)\b/i.test(raw)) return null;
   if (!filterProse(raw, { maxChars: 200 }).pass) return null;
   const last = entries[entries.length - 1]?.text ?? '';
-  const theirs = contentWords(last);
+  // After a short reply ("idk"), it picks up an earlier thread, so any of their words count.
+  const theirs = isThin(last) ? contentWords(entries.map((e) => e.text).join(' ')) : contentWords(last);
   const used = [...contentWords(raw)].some((w) => theirs.has(w));
   return used ? raw : null;
 }
@@ -548,7 +570,7 @@ async function answerAboutThem(
     ?? { body: ANSWER_FALLBACK, kind: 'ai_inference', scripture: [], questionsToConsider: [], counsel: [], dropped: why };
   return {
     state: {
-      ...s, ...extra, bibleOffered: false, currentQuestionId: 'followup',
+      ...s, ...extra, bibleOffered: false, currentQuestionId: 'followup', cardAt: s.entries.length,
       said: remember(prior, shown.body, ...shown.questionsToConsider),
     },
     output: { kind: 'question', text: AFTER_ANSWER, questionId: 'followup', answer: shown },
@@ -661,7 +683,7 @@ export async function takeConversationTurn(
     return {
       state: {
         ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }),
-        bibleOffered: false, bibleOfferAt: s.entries.length,
+        bibleOffered: false, bibleOfferAt: s.entries.length, cardAt: s.entries.length,
         said: remember(prior, shown.body, ...(answer?.questionsToConsider ?? []), ...(answer?.counsel ?? [])),
       },
       output: {
@@ -695,6 +717,13 @@ export async function takeConversationTurn(
   const followP: Promise<string | null> =
     phase >= 2 && live && (tier === 'none' || tier === 'mild') && !ev.showCard && !isThin(text)
       && (paused || tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
+      ? generateFollowUp(live, heard, prior).catch(() => null)
+      : Promise.resolve(null);
+  // A short answer ("idk") right after an answer card or a follow-up: stay on the
+  // topic with a follow-up about the whole conversation, not a stock question.
+  const thinFollowP: Promise<string | null> =
+    phase >= 2 && live && tier === 'none' && !ev.showCard && isThin(text) && s.entries.length >= 2
+      && s.currentQuestionId === 'followup' && (s.followStreak ?? 0) < MAX_FOLLOW_STREAK + 1
       ? generateFollowUp(live, heard, prior).catch(() => null)
       : Promise.resolve(null);
 
@@ -774,9 +803,9 @@ export async function takeConversationTurn(
   // nothing good to ask, say so gently. None of these uses up a bank question:
   // the gate is put back, and the bank gets its turn on a later, lighter turn.
   if (synthesis && state.synthesesOffered.length > before) {
-    state = { ...state, lastGuessAt: state.entries.length };
+    state = { ...state, lastGuessAt: state.entries.length, cardAt: state.entries.length };
   }
-  const followUp = await followP;
+  const followUp = (await followP) ?? (await thinFollowP);
   const hasGuess = Boolean(synthesis);
   if (!paused && !hasGuess && output.kind === 'question') {
     const canFollow = tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK;
@@ -836,22 +865,43 @@ export async function takeConversationTurn(
   // After a crisis, if they move on, so does the app: no hotline reminders and no
   // mention of it. The "Need to talk to someone now" link is always at the top.
 
-  // One experiment per session, after the first synthesis is shown, and never
-  // to someone the support card has just been shown to.
-  if (phase >= 3 && tier === 'none' && !tender && !recentHurt && !heavy && synthesis && state.synthesesOffered.length > before
+  // One experiment per session, on the turn after the first guess (never on the
+  // same screen as it), and never to someone the support card has just been shown to.
+  const guessedLastTurn = s.lastGuessAt !== undefined && s.lastGuessAt === s.entries.length;
+  // If they talked about moving on or losing something, the Scripture offer has
+  // that turn, not the experiment.
+  const scriptureDue = s.bibleOfferAt === undefined
+    && state.entries.slice(-3).some((e) => FITTING_MOMENT.test(e.text));
+  if (phase >= 3 && tier === 'none' && !tender && !recentHurt && !heavy && !synthesis && guessedLastTurn && !scriptureDue
+      && output.kind === 'question' && !isThin(text)
       && !state.support?.shown && (state.experiments ?? []).length === 0) {
     const x: Experiment = pickExperiment(state.entries as Entry[]);
     const o = offer(state, x, now);
     state = o.state;
     output.experiment = { id: o.record.id, title: o.record.title, source: o.record.source };
+    state = { ...state, cardAt: state.entries.length };
   }
-  // Where next? Every few messages, or sooner when answers get short, the person
-  // picks the path. At a fitting moment, the app offers Scripture in the chat.
+  // Never ask the same question twice in a row of the app's last few lines.
+  {
+    const asked = (output as { text?: string }).text;
+    if (output.kind === 'question' && asked && prior.includes(asked)) {
+      const alt = followUp && !prior.includes(followUp) && followUp !== output.reply ? followUp : openLine(prior);
+      output = { ...output, text: alt, questionId: 'followup' };
+      state = { ...state, gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt }, currentQuestionId: 'followup' };
+    }
+  }
+
+  // Where next? One card at a time, with room between them. The block comes when
+  // the answers have gone short twice in a row, or after a long stretch with no
+  // card. It never follows a Scripture answer closely, since that is what it offers.
+  // At a fitting moment, the app offers Scripture in the chat instead.
   let offered = false;
   if (phase >= 2 && !heavy && !paused && tier !== 'elevated' && output.kind === 'question'
       && !hasGuess && !output.experiment && state.entries.length >= 2) {
-    const since = state.entries.length - (s.choicesAt ?? 0);
-    const sinceBible = state.entries.length - (s.bibleOfferAt ?? -99);
+    const n = state.entries.length;
+    const since = n - (s.choicesAt ?? 0);
+    const sinceCard = n - (s.cardAt ?? 0);
+    const sinceBible = n - (s.bibleOfferAt ?? -99);
     const recent = state.entries.slice(-2);
     const stalled = recent.length === 2
       && recent.every((e) => isThin(e.text) || e.text.trim().split(/\s+/).length <= 4);
@@ -859,17 +909,34 @@ export async function takeConversationTurn(
     // over for me and I don't know how to move on" still gets the offer once a
     // guess card or the first turn is out of the way.
     const fitting = state.entries.slice(-3).some((e) => FITTING_MOMENT.test(e.text));
-    if (since >= 5 || (stalled && since >= 3)) {
-      output.choices = true;
-      state = { ...state, choicesAt: state.entries.length };
-    } else if (sinceBible >= 4 && (fitting || tier === 'mild')) {
-      if (output.reply && output.reply.trim().endsWith('?')) {
-        const kept = withoutQuestion(output.reply);
+    if (sinceCard >= 2 && sinceBible >= 4 && ((stalled && since >= 4) || (since >= 7 && sinceCard >= 4))) {
+      // The block is the question. Keep the reflection, drop any other question.
+      const q = (output as { text?: string }).text;
+      if (!output.reply && q && (output as { questionId?: string }).questionId === 'followup') {
+        const kept = keepStatement(q);
+        if (kept) output.reply = kept;
+      } else if (output.reply && output.reply.trim().endsWith('?')) {
+        const kept = keepStatement(output.reply);
         if (kept) output.reply = kept; else delete output.reply;
       }
-      output = { ...output, text: BIBLE_OFFERS[state.entries.length % BIBLE_OFFERS.length] };
-      state = { ...state, bibleOfferAt: state.entries.length };
-      offered = true;
+      output = { ...output, text: '', choices: true };
+      state = {
+        ...state, choicesAt: n, cardAt: n, currentQuestionId: 'followup',
+        gate: { ...state.gate, heavyServedAt: s.gate.heavyServedAt },
+      };
+    } else if (sinceBible >= 4 && sinceCard >= 1 && (fitting || tier === 'mild')) {
+      // Keep the affirmation or reflection. If it cannot be kept without its
+      // question, wait for a later turn rather than lose it.
+      let ok = true;
+      if (output.reply && output.reply.trim().endsWith('?')) {
+        const kept = keepStatement(output.reply);
+        if (kept) output.reply = kept; else ok = false;
+      }
+      if (ok) {
+        output = { ...output, text: BIBLE_OFFERS[n % BIBLE_OFFERS.length] };
+        state = { ...state, bibleOfferAt: n, cardAt: n };
+        offered = true;
+      }
     }
   }
   state = { ...state, bibleOffered: offered, said: remember(prior, output.reply, (output as { text?: string }).text) };
