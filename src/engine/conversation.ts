@@ -47,6 +47,12 @@ export type ConvState = SessionState & {
   heavyAt?: { at: number; level: 'acute' | 'elevated' };
   /** How many times crisis language has come up in this conversation. Sets which message is shown. */
   crisisCount?: number;
+  /** Entry count when the "choose your path" block was last shown. */
+  choicesAt?: number;
+  /** Entry count when the app last offered Scripture in the chat. */
+  bibleOfferAt?: number;
+  /** True right after the app asked "Would it help to see what the Bible says?" */
+  bibleOffered?: boolean;
   /** The app's own last few lines (replies, questions, answers). Used only so it does not repeat itself. */
   said?: string[];
 };
@@ -159,7 +165,39 @@ export type ConversationOutput = TurnOutput & {
   /** Shown once, when the session has felt heavy for a while. Fixed text. */
   support?: SupportCard;
   experiment?: { id: string; title: string; source: ExperimentRecord['source'] };
+  /** Show the three-way "where next?" block under this turn. */
+  choices?: boolean;
 };
+
+// ------------------------------------------------------------------ where next
+
+/** The three paths the person can pick from the block. */
+export type ChoicePath = 'thoughts' | 'deeper' | 'bible';
+
+export const CHOICE_LABELS: Record<ChoicePath, string> = {
+  thoughts: 'Would you like to hear my thoughts on your situation?',
+  deeper: 'Do you want to go deeper?',
+  bible: 'Would you like to hear what the Bible says about what you\u2019re going through?',
+};
+
+/** Moving on, losing something, not knowing what next: a moment Scripture may speak to. */
+const FITTING_MOMENT =
+  /\b(?:move on|moving on|new chapter|new season|this season|starting over|start over|lost|losing|gave up|giving up|let go|letting go|taken (?:away )?from me|over for me|don'?t know (?:what|how|where)|what (?:do|should) i do|afraid|scared|grie(?:f|ving)|miss (?:my|her|him|them))\b/i;
+
+/** Asked in the chat, not as a button. Varied, so it never reads like a script. */
+const BIBLE_OFFERS = [
+  'Would it help to see what the Bible says about something like this?',
+  'If it would help, I can share what Scripture says about a season like this. Would you like that?',
+  'Would you like to hear a passage from the Bible that speaks to this?',
+];
+
+const YES = /^(?:y|ya|yah|yea|yeah|yes|yep|yup|sure|ok|okay|k|please|yes please|sure thing|of course|definitely|i would|i'?d like that|that would help|go ahead|why not|absolutely|ok(?:ay)? sure)\b[\s.!,]*(?:please|thanks|thank you)?[\s.!]*$/i;
+const NO = /^(?:no|nah|nope|not now|not really|maybe later|no thanks|no thank you|i'?m (?:ok|okay|good)|pass)\b[\s.!,]*$/i;
+
+const BIBLE_ABOUT_ME = 'What does the Bible say about what I have been going through?';
+const THOUGHTS_ABOUT_ME =
+  'Based only on what I have told you, share your honest thoughts on my situation: two or three tentative observations, clearly a guess and not a finding, kind "ai_inference".';
+const DEEPER_FALLBACK = 'What feels like it is underneath all of this for you?';
 
 export interface ConvDeps {
   /** What takeTurn needs. */
@@ -192,6 +230,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Name something specific they just told you, in their own words, so they feel heard.
 - If something they said EARLIER connects to it, you may set the two side by side as a question, using their own words: "Earlier you mentioned the billing system; does explaining things come up here too?" Never say one caused the other.
 - Warm and plain, like a thoughtful friend. No advice, no diagnosis, no explaining why they feel or act this way.
+- If their latest message shares a step forward (something they built, tried, finished or started; a new chapter; a strength from something they lost that they are now using somewhere new), begin by genuinely affirming it in specific words: name what they are doing and where it came from, for example that the resilience soccer gave them is showing up in the hackathon. Affirm what they are doing, never who they are. Vary the wording each time; do not open with "Congratulations" every time.
 - Vary how you begin. Do not open with "I'm glad you said" or "Thank you for saying", and do not put their words in quotation marks every time. Speak naturally, and be specific rather than generic. Avoid the stock phrases "a lot to carry", "heavy", "a long stretch", "sit with" and "real ache"; find a fresher, plainer way to say it.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
@@ -201,12 +240,13 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 Return only the sentences, no JSON.${priorBlock(prior, latest)}`;
 }
 
-export function followUpPrompt(entries: { text: string }[], prior: string[] = []): string {
+export function followUpPrompt(entries: { text: string }[], prior: string[] = [], deeper = false): string {
   const latest = entries[entries.length - 1]?.text ?? '';
   // The questions go a little deeper as the conversation does, so it has a direction.
   const real = entries.filter((e) => !isThin(e.text)).length;
-  const aim =
-    real <= 2
+  const aim = deeper
+    ? 'what is underneath what they have been describing: what it means to them, what they hope for, or what they are afraid of losing. Gentle, not probing.'
+    : real <= 2
       ? 'what they actually did or what it involved: the concrete details.'
       : real <= 4
         ? 'how it was for them: what held their attention, what drained them, or who it was for.'
@@ -374,10 +414,10 @@ const contentWords = (t: string): Set<string> =>
  * at least one of their own words. Anything else becomes null and the bank asks.
  */
 export async function generateFollowUp(
-  live: ModelProvider, entries: { text: string }[], prior: string[] = [],
+  live: ModelProvider, entries: { text: string }[], prior: string[] = [], deeper = false,
 ): Promise<string | null> {
   const raw = (await live.complete(
-    entries.map((e) => ({ role: 'user', content: e.text })), followUpPrompt(entries, prior),
+    entries.map((e) => ({ role: 'user', content: e.text })), followUpPrompt(entries, prior, deeper),
   )).trim().replace(/^["“]|["”]$/g, '');
   if (repeatsItself(raw, prior, entries[entries.length - 1]?.text ?? '')) return null;
   if (CLAIMS_SAVED.test(raw)) return null;
@@ -480,6 +520,61 @@ export function resumeQuestions(
   };
 }
 
+/**
+ * A faith answer about the person's own situation, built from what they have
+ * said. Used when they say yes to the Scripture offer, or pick a path from the
+ * block. Same model, same filters, same YouVersion text as any faith answer.
+ */
+async function answerAboutThem(
+  s: ConvState, deps: ConvDeps, question: string, extra: Partial<ConvState> = {},
+): Promise<{ state: ConvState; output: ConversationOutput }> {
+  const prior = s.said ?? [];
+  let answer: FaithAnswer | null = null;
+  let why = 'no live model';
+  if (deps.live) {
+    try {
+      const d = await generateAnswerDetailed(deps.live, question, s.entries, prior);
+      answer = d.answer;
+      if (d.reason) why = d.reason;
+    } catch (e) {
+      why = `threw: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+    }
+  }
+  if (answer && deps.scripture && answer.scripture.length > 0) {
+    const passages = await fetchPassages(answer.scripture, deps.scripture).catch(() => []);
+    if (passages.length > 0) answer = { ...answer, passages };
+  }
+  const shown: FaithAnswer = answer
+    ?? { body: ANSWER_FALLBACK, kind: 'ai_inference', scripture: [], questionsToConsider: [], counsel: [], dropped: why };
+  return {
+    state: {
+      ...s, ...extra, bibleOffered: false, currentQuestionId: 'followup',
+      said: remember(prior, shown.body, ...shown.questionsToConsider),
+    },
+    output: { kind: 'question', text: AFTER_ANSWER, questionId: 'followup', answer: shown },
+  };
+}
+
+/**
+ * A path picked from the "where next?" block. Nothing is recorded as an entry:
+ * picking a button is not something the person said.
+ */
+export async function takeChoice(
+  s: ConvState, path: ChoicePath, deps: ConvDeps,
+): Promise<{ state: ConvState; output: ConversationOutput }> {
+  if (path === 'bible') return answerAboutThem(s, deps, BIBLE_ABOUT_ME, { bibleOfferAt: s.entries.length });
+  if (path === 'thoughts') return answerAboutThem(s, deps, THOUGHTS_ABOUT_ME);
+  const prior = s.said ?? [];
+  const q = deps.live && s.entries.length > 0
+    ? await generateFollowUp(deps.live, s.entries, prior, true).catch(() => null)
+    : null;
+  const text = q ?? DEEPER_FALLBACK;
+  return {
+    state: { ...s, bibleOffered: false, currentQuestionId: 'followup', said: remember(prior, text) },
+    output: { kind: 'question', text, questionId: 'followup' },
+  };
+}
+
 export async function takeConversationTurn(
   s: ConvState, text: string, deps: ConvDeps,
 ): Promise<{ state: ConvState; output: ConversationOutput }> {
@@ -503,6 +598,18 @@ export async function takeConversationTurn(
   // Typing "back to the questions" works like the button. Not recorded as an entry.
   if (phase >= 2 && tier === 'none' && wantsQuestionsBack(text) && (s.support?.active || s.entries.length > 0)) {
     return resumeQuestions(s, now);
+  }
+
+  // The app asked "Would it help to see what the Bible says?" in the chat.
+  if (phase >= 2 && s.bibleOffered && (tier === 'none' || tier === 'mild')) {
+    const t = text.trim();
+    if (YES.test(t)) return answerAboutThem(s, deps, BIBLE_ABOUT_ME);
+    if (NO.test(t)) {
+      return {
+        state: { ...s, bibleOffered: false },
+        output: { kind: 'question', text: 'That\u2019s okay. We can keep going wherever you like.', questionId: 'followup' },
+      };
+    }
   }
 
   // "What is the point of you?" gets a plain, fixed answer. No model call.
@@ -554,6 +661,7 @@ export async function takeConversationTurn(
     return {
       state: {
         ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }),
+        bibleOffered: false, bibleOfferAt: s.entries.length,
         said: remember(prior, shown.body, ...(answer?.questionsToConsider ?? []), ...(answer?.counsel ?? [])),
       },
       output: {
@@ -638,6 +746,11 @@ export async function takeConversationTurn(
   if (reply) output.reply = reply;
   // Paused with no follow-up: if the reply already asks something, that is the
   // question. Otherwise the stock line, but never the same one twice in a row.
+  // Paused with a follow-up AND a reply that already asks: one question, not two.
+  if (paused && pausedFollow && output.reply && output.reply.trim().endsWith('?')) {
+    output = { ...output, text: output.reply };
+    delete output.reply;
+  }
   if (paused && !pausedFollow && !ev.showCard) {
     if (output.reply && output.reply.trim().endsWith('?')) {
       output = { ...output, text: output.reply };
@@ -732,6 +845,29 @@ export async function takeConversationTurn(
     state = o.state;
     output.experiment = { id: o.record.id, title: o.record.title, source: o.record.source };
   }
-  state = { ...state, said: remember(prior, output.reply, (output as { text?: string }).text) };
+  // Where next? Every few messages, or sooner when answers get short, the person
+  // picks the path. At a fitting moment, the app offers Scripture in the chat.
+  let offered = false;
+  if (phase >= 2 && !heavy && !paused && tier !== 'elevated' && output.kind === 'question'
+      && !hasGuess && !output.experiment && state.entries.length >= 2) {
+    const since = state.entries.length - (s.choicesAt ?? 0);
+    const sinceBible = state.entries.length - (s.bibleOfferAt ?? -99);
+    const recent = state.entries.slice(-2);
+    const stalled = recent.length === 2
+      && recent.every((e) => isThin(e.text) || e.text.trim().split(/\s+/).length <= 4);
+    if (since >= 5 || (stalled && since >= 3)) {
+      output.choices = true;
+      state = { ...state, choicesAt: state.entries.length };
+    } else if (sinceBible >= 4 && (FITTING_MOMENT.test(text) || tier === 'mild')) {
+      if (output.reply && output.reply.trim().endsWith('?')) {
+        const kept = withoutQuestion(output.reply);
+        if (kept) output.reply = kept; else delete output.reply;
+      }
+      output = { ...output, text: BIBLE_OFFERS[state.entries.length % BIBLE_OFFERS.length] };
+      state = { ...state, bibleOfferAt: state.entries.length };
+      offered = true;
+    }
+  }
+  state = { ...state, bibleOffered: offered, said: remember(prior, output.reply, (output as { text?: string }).text) };
   return { state, output };
 }

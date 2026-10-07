@@ -34,6 +34,7 @@ type Turn =
   | { kind: 'notice'; text: string }
   | { kind: 'welcome'; text: string }
   | { kind: 'you'; text: string }
+  | { kind: 'choices'; used?: string }
   | { kind: 'people'; resources: { name: string; contact: string; detail: string }[] }
   | { kind: 'verse'; verse: { reference: string; text: string; version: string; versionTitle: string; copyright: string; link?: string } }
   | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] }
@@ -365,6 +366,36 @@ export default function Home() {
     ]);
   }
 
+  /** A path picked from the "where next?" block. Shown as if they asked it. */
+  async function choose(index: number, path: 'thoughts' | 'deeper' | 'bible', label: string) {
+    if (busy) return;
+    setBusy(true);
+    setTurns((t) => [
+      ...t.map((x, i) => (i === index && x.kind === 'choices' ? { ...x, used: path } : x)),
+      { kind: 'you', text: label },
+    ]);
+    try {
+      const res = await fetch('/api/turn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'choice', path, state }),
+      });
+      const r = await res.json();
+      if (r.state) setState(r.state);
+      const o = r.output ?? {};
+      const next: Turn[] = [];
+      if (r.degraded) {
+        next.push({ kind: 'notice', text: 'I could not reach the language model just now. What you wrote is still here.' });
+      }
+      if (o.answer) next.push({ kind: 'answer', answer: o.answer });
+      if (o.text) next.push({ kind: 'app', text: o.text });
+      setTurns((t) => [...t, ...next]);
+    } catch {
+      setTurns((t) => [...t, { kind: 'app', text: 'Something went wrong on my end. Try that again?' }]);
+    }
+    setBusy(false);
+  }
+
   async function submit() {
     const text = value.trim();
     if (!text || busy) return;
@@ -424,6 +455,7 @@ export default function Home() {
         }
         if (o.text) next.push({ kind: 'app', text: o.text });
         if (o.experiment) next.push({ kind: 'experiment', experiment: o.experiment });
+        if (o.choices) next.push({ kind: 'choices' });
         setTurns((t) => [...t, ...next]);
         if (o.care?.showResources || o.support?.showResources) setSheet('crisis');
       }
@@ -465,6 +497,27 @@ export default function Home() {
               {t.kind === 'welcome' && <p className="app-text">{t.text}</p>}
               {t.kind === 'notice' && <p className="reflect-note">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
+              {t.kind === 'choices' && (
+                <div className="synthesis">
+                  <div className="syn-kind">Where would you like to go next?</div>
+                  <div className="syn-evidence">
+                    {([
+                      ['thoughts', 'Would you like to hear my thoughts on your situation?'],
+                      ['deeper', 'Do you want to go deeper?'],
+                      ['bible', 'Would you like to hear what the Bible says about what you\u2019re going through?'],
+                    ] as const).map(([path, label]) => (
+                      <p className="quote" key={path}>
+                        <button className="j-link" disabled={busy || Boolean(t.used)}
+                                style={{ textAlign: 'left', fontWeight: t.used === path ? 600 : undefined }}
+                                onClick={() => void choose(i, path, label)}>
+                          {label}
+                        </button>
+                      </p>
+                    ))}
+                    {!t.used && <p className="reflect-note">Or just keep typing. This is only if it helps.</p>}
+                  </div>
+                </div>
+              )}
               {t.kind === 'people' && (
                 <div className="synthesis">
                   <div className="syn-kind">People who care and want to help</div>

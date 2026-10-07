@@ -21,7 +21,7 @@ import {
   begin, endSession, newSession, type SessionState,
 } from '../../../src/engine/session.js';
 import { glooEnabled, glooGuardedProvider, withRetry } from '../../../src/providers/gloo.js';
-import { resumeQuestions, takeConversationTurn, type ConvState } from '../../../src/engine/conversation.js';
+import { resumeQuestions, takeChoice, takeConversationTurn, type ChoicePath, type ConvState } from '../../../src/engine/conversation.js';
 import {
   chooseExperiment, recordReflection, type ExperimentChoice, type Feel,
 } from '../../../src/content/experiments.js';
@@ -125,7 +125,8 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json()) as {
-    action: 'begin' | 'turn' | 'end' | 'experiment' | 'reflect' | 'resume';
+    action: 'begin' | 'turn' | 'end' | 'experiment' | 'reflect' | 'resume' | 'choice';
+    path?: ChoicePath;
     state?: ConvState;
     text?: string;
     experimentId?: string;
@@ -204,6 +205,26 @@ export async function POST(req: Request) {
   const live = gloo
     ? withFallback(gloo, backup, recordFallback)
     : key ? withFallback(anthropicProvider(key), backup, recordFallback) : null;
+
+  const scripture = process.env.YVP_APP_KEY
+    ? { appKey: process.env.YVP_APP_KEY, bibleId: process.env.YVP_BIBLE_ID }
+    : undefined;
+
+  // A path picked from the "where next?" block: thoughts, deeper, or the Bible.
+  if (body.action === 'choice' && (body.path === 'thoughts' || body.path === 'deeper' || body.path === 'bible')) {
+    try {
+      const r = await takeChoice(state, body.path, {
+        turn: { provider: live ?? backup, systemPrompt: systemPrompt(state.entries), thirdPartyNames: [] },
+        live: live ?? undefined,
+        scripture,
+      });
+      return NextResponse.json({ ...r, mode: live ? (degraded.v ? 'fallback' : 'primary') : 'fixtures', degraded: degraded.v });
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.error('[whyfinder] choice failed:', detail);
+      return NextResponse.json({ state, output: { kind: 'question', text: 'Say a bit more about that.', questionId: 'recovery' }, mode: 'error' });
+    }
+  }
 
   try {
     const r = await takeConversationTurn(state, body.text ?? '', {
