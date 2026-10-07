@@ -232,52 +232,76 @@ export function crisisContext(texts: string[]): CrisisContext {
   return 'general';
 }
 
-const STOPPING = 'What you just said matters more than anything we were talking about, so I’m stopping the questions to stay with this.';
-
+/**
+ * WhyFinder is not a crisis service. The first time, it says so warmly, points to
+ * people and keeps the door open. If the person comes back to it, the wording
+ * gets plainer and shorter, and it never repeats a hotline on ordinary turns.
+ * ALL OF THIS COPY IS AUTHORED AND UNREVIEWED: it needs clinical and pastoral review.
+ */
 const OPENING: Record<CrisisContext, string> = {
-  general: `I’m really glad you told me. ${STOPPING}`,
-  grief: `I’m so sorry about who you have lost, and I’m really glad you told me this. ${STOPPING}`,
-  family: `It sounds like things at home have been really hard, and I’m really glad you told me. ${STOPPING}`,
-  lonely: `Feeling this alone can make everything look darker, and I’m really glad you told me. ${STOPPING}`,
+  general: 'I’m really glad you told me.',
+  grief: 'I’m so sorry about who you have lost, and I’m really glad you told me this.',
+  family: 'It sounds like things at home have been really hard, and I’m really glad you told me.',
+  lonely: 'Feeling this alone can make everything look darker, and I’m really glad you told me.',
 };
 
 /** Who to reach. At home the conflict may be with a parent, so a parent is not the first name offered. */
 const REACH: Record<CrisisContext, string> = {
-  general: 'a parent, a pastor, a counselor or a friend',
+  general: 'a pastor, a counselor, a friend or family member',
   grief: 'a family member, a pastor, a counselor or a friend',
   family: 'a relative you trust, a pastor, a school counselor or a friend',
   lonely: 'a pastor, a counselor, a relative or anyone you trust, even someone you have not talked to in a while',
 };
 
-const FAITH: Record<CrisisContext, string> = {
-  general:
-    'And please hear this: you are loved, and your life matters. The Christian faith holds that every person is made in the image of God and made for community, so you were never meant to carry this alone.',
-  grief:
-    'Grief this deep can make it feel like there is no way forward. But you are loved, and your life matters, to God and to the people still here with you. Christians have long believed that God draws near to the grieving, and that we are meant to grieve together, not alone.',
-  family:
-    'And please hear this: you are loved, and your life matters, even on the days when home feels like the hardest place to be. The Christian faith holds that every person is made in the image of God, and that there are people beyond this argument who are meant to stand with you.',
-  lonely:
-    'Please hear this: you are loved, and your life matters, even when it feels like no one notices. The Christian faith holds that every person is made in the image of God and made for community, so you were never meant to be this alone. The Psalms are full of people bringing exactly this loneliness to God.',
-};
+/** The first time: the team's own words. */
+export const FIRST_MESSAGE =
+  'I want to take a moment to remind you that we’re not a licensed psychologist or pastor, but we still care about your well-being. Having these feelings is normal and a part of your journey. A big part is remembering that we are meant for community. We are not meant to walk the world alone. We encourage you to reach out if your thoughts are feeling too heavy to carry alone.';
 
-export function acuteResponse(context: CrisisContext = 'general'): {
+export const FIRST_CLOSING = 'Would you like to keep talking? I’ll be right here.';
+
+/** The second time: plainer, and it says this conversation is not the place for it. */
+export const SECOND_MESSAGE =
+  'We are not licensed for counseling, and it is not what this app is for. We believe in real human interaction for thoughts of this nature. We see you and are glad that you’re here sharing this with us. The first step in traveling outside this season and these feelings is reaching out. Humans are not meant to go through life alone and are meant to support one another. Here are people that care about you and want to help. We’re here when you’re ready to continue, but we strongly encourage you to take that next step.';
+
+/** The third time and every time after. */
+export const REPEAT_MESSAGE =
+  'Here are people that care about you and want to help. We’re here when you’re ready to continue, but we strongly encourage you to take that next step.';
+
+export function acuteResponse(context: CrisisContext = 'general', count = 1): {
   stopsExercise: boolean;
   namesConcern: string;
   resources: typeof CRISIS_RESOURCES;
   offersHuman: string;
-  /** A short word from the Christian faith. AUTHORED, UNREVIEWED: needs pastoral and clinical review. */
+  /** The main message. AUTHORED, UNREVIEWED: needs pastoral and clinical review. */
   faith: string;
-  verse: typeof CRISIS_VERSE;
+  verse?: typeof CRISIS_VERSE;
+  closing?: string;
   context: CrisisContext;
+  /** How many times this has come up in this conversation: 1, 2, or 3 and after. */
+  level: 1 | 2 | 3;
 } {
+  if (count >= 3) {
+    return {
+      stopsExercise: true, namesConcern: REPEAT_MESSAGE, resources: CRISIS_RESOURCES,
+      offersHuman: '', faith: '', context, level: 3,
+    };
+  }
+  if (count === 2) {
+    return {
+      stopsExercise: true, namesConcern: SECOND_MESSAGE, resources: CRISIS_RESOURCES,
+      offersHuman: '', faith: '', context, level: 2,
+    };
+  }
   return {
     stopsExercise: true,
     namesConcern: OPENING[context],
     resources: CRISIS_RESOURCES,
-    offersHuman:
-      `This is beyond what a conversation with an app can help with, and you deserve a real person right now. Please call or text 988, the Suicide & Crisis Lifeline, or tell someone near you tonight: ${REACH[context]}. If you are in danger right now, call 911.`,
-    faith: FAITH[context],
+    faith: FIRST_MESSAGE,
+    // C-06: the crisis line appears once, here. It is not repeated on later turns.
+    offersHuman: `Please reach out to someone you trust today: ${REACH[context]}. If you are in danger right now, call or text 988, or call 911.`,
     verse: context === 'lonely' ? LONELY_VERSE : CRISIS_VERSE,
+    closing: FIRST_CLOSING,
     context,
+    level: 1,
   };
 }

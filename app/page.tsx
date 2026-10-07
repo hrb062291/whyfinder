@@ -391,9 +391,10 @@ export default function Home() {
         setTurns((t) => [
           ...t,
           { kind: 'app', text: o.response.namesConcern },
-          { kind: 'app', text: o.response.offersHuman },
           ...(o.response.faith ? [{ kind: 'app' as const, text: o.response.faith }] : []),
+          ...(o.response.offersHuman ? [{ kind: 'app' as const, text: o.response.offersHuman }] : []),
           ...(o.response.verse ? [{ kind: 'verse' as const, verse: o.response.verse }] : []),
+          ...(o.response.closing ? [{ kind: 'app' as const, text: o.response.closing }] : []),
         ]);
         setSheet('crisis');
       } else {

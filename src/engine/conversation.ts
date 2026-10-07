@@ -45,6 +45,8 @@ export type ConvState = SessionState & {
    * messages there are no stock questions and no guesses, only staying with them.
    */
   heavyAt?: { at: number; level: 'acute' | 'elevated' };
+  /** How many times crisis language has come up in this conversation. Sets which message is shown. */
+  crisisCount?: number;
   /** The app's own last few lines (replies, questions, answers). Used only so it does not repeat itself. */
   said?: string[];
 };
@@ -106,23 +108,6 @@ function priorBlock(prior: string[], latest: string): string {
   return `\n\nWhat YOU (WhyFinder) have already said to them, most recent last:\n${list}\n\n- Do not repeat any of that, and do not give the same suggestion again in other words.${knows}`;
 }
 
-/** Other ways to say it, so the same line does not appear turn after turn. All keep 988 in view. */
-const HEAVY_CARE_MORE: Record<'acute' | 'elevated', string[]> = {
-  acute: [
-    'You can call or text 988 at any hour, day or night. I\u2019m still listening.',
-    'Reaching 988, or one person you trust, is the most important next step tonight. I\u2019m here too.',
-  ],
-  elevated: [
-    '988 is there any time, by call or text. I\u2019m still listening.',
-    'A pastor, counselor or friend could help carry this with you, and 988 is there any time.',
-  ],
-};
-
-function heavyCare(level: 'acute' | 'elevated', n = 0): Care {
-  const all = [HEAVY_CARE[level], ...HEAVY_CARE_MORE[level]];
-  return { tier: 'elevated', showResources: false, text: all[((n % all.length) + all.length) % all.length] };
-}
-
 /** When the gentle line was the last thing said, the next one is different. */
 const TENDER_MORE = [
   'I am still here. Say as much or as little as you want.',
@@ -153,12 +138,6 @@ function remember(prior: string[], ...lines: (string | undefined | null)[]): str
 
 /** How many messages after a crisis the app keeps stock questions and guesses away. */
 export const HEAVY_TURNS = 6;
-
-/** Fixed wording on each turn after a crisis. AUTHORED, UNREVIEWED: needs clinical review. */
-export const HEAVY_CARE: Record<'acute' | 'elevated', string> = {
-  acute: 'If you are still thinking about ending your life, please call or text 988 now, or tell someone near you. I’m still here too.',
-  elevated: 'If it gets harder, you can call or text 988 any time, or reach a pastor, counselor or friend. I’m still here.',
-};
 
 export interface FaithAnswer {
   body: string;
@@ -217,6 +196,7 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
 - Never say you saved, noted or added anything to their journal. You cannot; only the app's journal buttons and commands can.
+- Never bring up suicide, self-harm, crisis lines or anything they said earlier about wanting to die, unless their latest message does. If they have moved on to something else, move on with them.
 - Only if the message is empty of anything concrete, reply with exactly: NONE
 Return only the sentences, no JSON.${priorBlock(prior, latest)}`;
 }
@@ -243,6 +223,7 @@ Aim the question at ${aim}
 - Use one of their own words for the thing you are asking about.
 - Open-ended: it should invite a sentence or two, not yes or no.
 - Avoid the stock phrases "carry", "heavy" and "long stretch".
+- Never bring up suicide, self-harm, crisis lines or anything they said earlier about wanting to die, unless their latest message does.
 - Sound natural. Do not recite their earlier words back in quotation marks; refer to them lightly, the way a person would.
 - Under 140 characters. One question mark. No advice and no explanation.
 - Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God unless they did.
@@ -568,7 +549,7 @@ export async function takeConversationTurn(
     const repeatable = !hurtLately && (!asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked));
     // A real answer already points to people. The stock mild line only stays if the answer failed.
     const care = ((ev.showCard || answer) && tier === 'mild' ? null : careFor(tier))
-      ?? (heavyLevel ? heavyCare(heavyLevel, s.entries.length - (s.heavyAt?.at ?? 0)) : undefined);
+      ?? undefined;
     const shown = answer ?? { body: ANSWER_FALLBACK };
     return {
       state: {
@@ -624,9 +605,10 @@ export async function takeConversationTurn(
   // Remember the crisis, so the next few turns stay with the person.
   if (output.kind === 'acute') {
     // Meet them where they are: grief, home, loneliness. The safety parts never change.
-    const response = acuteResponse(crisisContext([...s.entries.map((e) => e.text), text]));
+    const count = (s.crisisCount ?? 0) + 1;
+    const response = acuteResponse(crisisContext([...s.entries.map((e) => e.text), text]), count);
     return {
-      state: { ...state, heavyAt: { at: s.entries.length, level: 'acute' }, said: remember(prior, response.namesConcern, response.faith) },
+      state: { ...state, crisisCount: count, heavyAt: { at: s.entries.length, level: 'acute' }, said: remember(prior, response.namesConcern, response.faith) },
       output: { kind: 'acute', response },
     };
   }
@@ -738,8 +720,8 @@ export async function takeConversationTurn(
   if (tier === 'mild' && (output.reply || pausedFollow || (output as { questionId?: string }).questionId === 'followup')) {
     delete output.care;
   }
-  // Close to a crisis, 988 stays in view on every turn.
-  if (heavyLevel && !output.care) output.care = heavyCare(heavyLevel, s.entries.length - (s.heavyAt?.at ?? 0));
+  // After a crisis, if they move on, so does the app: no hotline reminders and no
+  // mention of it. The "Need to talk to someone now" link is always at the top.
 
   // One experiment per session, after the first synthesis is shown, and never
   // to someone the support card has just been shown to.

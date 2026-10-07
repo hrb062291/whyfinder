@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { acuteResponse, crisisContext } from '../src/constraints/acuteSignal.js';
+import { FIRST_MESSAGE, acuteResponse, crisisContext } from '../src/constraints/acuteSignal.js';
 import {
-  ALREADY_KNOW, followUpPrompt, generateReply, repeatsItself, replyPrompt, takeConversationTurn,
+  ALREADY_KNOW, CLAIMS_SAVED, followUpPrompt, generateReply, repeatsItself, replyPrompt, takeConversationTurn,
 } from '../src/engine/conversation.js';
 import { newSession } from '../src/engine/session.js';
 import { fixtureProvider } from '../src/providers/index.js';
@@ -19,7 +19,7 @@ describe('the crisis response fits what they have been going through', () => {
     expect(crisisContext(texts as string[])).toBe(ctx);
   });
 
-  it('each context gets its own opening, people and verse, and the same safety core', () => {
+  it('each context gets its own opening, people and verse, and the same core message', () => {
     const grief = acuteResponse('grief');
     const lonely = acuteResponse('lonely');
     const family = acuteResponse('family');
@@ -27,16 +27,15 @@ describe('the crisis response fits what they have been going through', () => {
     expect(grief.namesConcern).toMatch(/lost/);
     expect(lonely.namesConcern).toMatch(/alone/);
     expect(family.namesConcern).toMatch(/home/);
-    expect(new Set([grief.faith, lonely.faith, family.faith, general.faith]).size).toBe(4);
-    expect(lonely.verse.reference).toBe('Psalm 25:16');
-    expect(grief.verse.reference).toBe('Psalm 34:18');
+    expect(lonely.verse?.reference).toBe('Psalm 25:16');
+    expect(grief.verse?.reference).toBe('Psalm 34:18');
     // At home the conflict may be with a parent, so a parent is not the first person named.
     expect(family.offersHuman).not.toMatch(/a parent/);
     for (const r of [grief, lonely, family, general]) {
-      expect(r.offersHuman).toMatch(/beyond what a conversation with an app/);
+      expect(r.faith).toBe(FIRST_MESSAGE);
       expect(r.offersHuman).toMatch(/988/);
       expect(r.offersHuman).toMatch(/911/);
-      expect(r.faith).toMatch(/you are loved/i);
+      expect(r.closing).toMatch(/keep talking/);
       expect(JSON.stringify(r)).not.toMatch(/\bpurpose\b|\bflagged\b|\bdiagnos/i);
     }
   });
@@ -99,20 +98,37 @@ describe('not repeating itself', () => {
     expect(o.text).toBe('What makes finding a community hard right now?');
   });
 
-  it('the gentle line and the 988 line do not repeat word for word', async () => {
+  it('never claims to have saved something to the journal', async () => {
+    const heard = [{ text: 'id like to ad first Peter to my journal' }];
+    expect(await generateReply(fixtureProvider(['First Peter is noted for your journal. Which verse is on your mind?']), heard)).toBeNull();
+    expect(await generateReply(fixtureProvider(['I saved that to your journal.']), heard)).toBeNull();
+    expect(CLAIMS_SAVED.test('You keep a journal at home, which sounds steady.')).toBe(false);
+  });
+
+  it('while paused, the "I am listening" line is not repeated word for word', async () => {
+    const live = () => ({ turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
+    let r = await takeConversationTurn(newSession('u', 's'), "I've been really anxious", live());
+    r = await takeConversationTurn(r.state, 'im sorta lost in work and school and relationships, so I get extremely anxious', live());
+    const texts: string[] = [];
+    for (const m of ['it has been a long week at school', 'my roommate and I barely talk', 'work keeps piling up']) {
+      r = await takeConversationTurn(r.state, m, live());
+      texts.push((r.output as { text?: string }).text ?? '');
+    }
+    for (let i = 1; i < texts.length; i++) expect(texts[i]).not.toBe(texts[i - 1]);
+  });
+
+  it('after a crisis, moving on means no hotline reminders and no repeated lines', async () => {
     const live = () => ({ turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
     let r = await takeConversationTurn(newSession('u', 's'), 'work is a lot', live());
     r = await takeConversationTurn(r.state, 'i want to kill myself', live());
-    const cares: string[] = [];
     const texts: string[] = [];
-    for (const m of ['idk', 'it just hurts', 'everything hurts']) {
+    for (const m of ['idk', 'I had soccer taken away from me', 'soccer was freeing for my mind']) {
       r = await takeConversationTurn(r.state, m, live());
       const o = r.output as { text?: string; care?: { text: string } };
-      cares.push(o.care?.text ?? '');
+      expect(o.care?.text ?? '').not.toMatch(/988|ending your life/);
       texts.push(o.text ?? '');
     }
-    expect(cares.every((c) => /988/.test(c))).toBe(true);
-    for (let i = 1; i < cares.length; i++) expect(cares[i]).not.toBe(cares[i - 1]);
     for (let i = 1; i < texts.length; i++) expect(texts[i]).not.toBe(texts[i - 1]);
   });
+
 });

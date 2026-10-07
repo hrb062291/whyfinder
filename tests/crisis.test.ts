@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { acuteResponse, detectAcuteSignal, normalizeForSignal } from '../src/constraints/acuteSignal.js';
+import { FIRST_MESSAGE, REPEAT_MESSAGE, SECOND_MESSAGE, acuteResponse, detectAcuteSignal, normalizeForSignal } from '../src/constraints/acuteSignal.js';
 import { concernTier } from '../src/constraints/concernTier.js';
-import { HEAVY_CARE, HEAVY_TURNS, takeConversationTurn } from '../src/engine/conversation.js';
+import { HEAVY_TURNS, takeConversationTurn } from '../src/engine/conversation.js';
 import { newSession } from '../src/engine/session.js';
 import { fixtureProvider } from '../src/providers/index.js';
 import { QUESTIONS } from '../src/content/questions.js';
@@ -49,55 +49,84 @@ describe('crisis language with typos and slang', () => {
   });
 });
 
-describe('the crisis response', () => {
+describe('the crisis response, first time', () => {
   const r = acuteResponse();
-  it('says it is beyond the app, names 988 and real people', () => {
-    expect(r.offersHuman).toMatch(/beyond/i);
+  it('uses the team\'s message, names real people and 988 once, and keeps the door open', () => {
+    expect(r.level).toBe(1);
+    expect(r.faith).toBe(FIRST_MESSAGE);
+    expect(r.faith).toMatch(/not a licensed psychologist or pastor/);
+    expect(r.faith).toMatch(/meant for community/);
     expect(r.offersHuman).toMatch(/988/);
     expect(r.offersHuman).toMatch(/pastor|counselor|friend/i);
+    expect(r.closing).toMatch(/keep talking/i);
   });
-  it('carries a Christian word and a fixed verse with its source', () => {
-    expect(r.faith).toMatch(/you are loved/i);
-    expect(r.faith).toMatch(/community/i);
-    expect(r.verse.reference).toBe('Psalm 34:18');
-    expect(r.verse.text).toBe('The Lord is near to the brokenhearted; He saves the contrite in spirit.');
-    expect(r.verse.copyright).toBe('Public Domain');
+  it('carries a fixed verse with its source', () => {
+    expect(r.verse?.reference).toBe('Psalm 34:18');
+    expect(r.verse?.text).toBe('The Lord is near to the brokenhearted; He saves the contrite in spirit.');
+    expect(r.verse?.copyright).toBe('Public Domain');
   });
-  it('keeps the must-nots', () => {
-    const all = JSON.stringify(r);
-    expect(all).not.toMatch(/\bflagged\b|\bdiagnos|\bdepress|anxiet|disorder\b/i);
-    expect(all).not.toMatch(/\bpurpose\b/i); // P-01
+  it('keeps the must-nots at every level', () => {
+    for (const n of [1, 2, 3, 7]) {
+      const all = JSON.stringify(acuteResponse('general', n));
+      expect(all).not.toMatch(/\bflagged\b|\bdiagnos|\bdepress|anxiet|disorder\b/i);
+      expect(all).not.toMatch(/\bpurpose\b/i); // P-01
+    }
   });
 });
 
-describe('after a crisis, no stock questions', () => {
-  it('replays the live conversation: no bank question, no guess, 988 stays in view', async () => {
+describe('when it comes up again', () => {
+  it('second time: plainer, and says this is not what the app is for', () => {
+    const r = acuteResponse('general', 2);
+    expect(r.level).toBe(2);
+    expect(r.namesConcern).toBe(SECOND_MESSAGE);
+    expect(r.namesConcern).toMatch(/not licensed for counseling/);
+    expect(r.verse).toBeUndefined();
+  });
+  it('third time and every time after: the short message', () => {
+    for (const n of [3, 4, 10]) expect(acuteResponse('general', n).namesConcern).toBe(REPEAT_MESSAGE);
+  });
+  it('the engine counts it across the conversation', async () => {
+    const live = () => ({ turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
+    let r = await takeConversationTurn(newSession('u', 's'), 'work is a lot', live());
+    const levels: number[] = [];
+    for (const m of ['I want to kill myself', 'soccer was taken from me', 'i still want to die', 'i want to end it', 'kms']) {
+      r = await takeConversationTurn(r.state, m, live());
+      if (r.output.kind === 'acute') levels.push((r.output as { response: { level: number } }).response.level);
+    }
+    expect(levels).toEqual([1, 2, 3, 3]);
+  });
+});
+
+describe('after a crisis, no stock questions and no reminders', () => {
+  it('replays the live conversation: no bank question, no guess, no repeated hotline', async () => {
     const live = () => ({ turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
     let r = await takeConversationTurn(newSession('u', 's'), "I've been angry at everything, mostly at my parents.", live());
     r = await takeConversationTurn(r.state, "I've been feeling like I want to kill myslef", live());
     expect(r.output.kind).toBe('acute');
     expect(r.state.heavyAt?.level).toBe('acute');
-    for (const msg of ["I don't have any purpose", 'idk', 'they never listen to me', 'i just feel tired of everything']) {
+    for (const msg of ['idk', 'I had soccer taken away from me', 'soccer was freeing for my mind']) {
       r = await takeConversationTurn(r.state, msg, live());
       const o = r.output as { text?: string; care?: { text: string }; synthesis?: unknown };
       expect(BANK.has(o.text ?? '')).toBe(false);
       expect(o.synthesis).toBeUndefined();
-      expect(o.care?.text ?? '').toMatch(/988/);
+      expect(o.care?.text ?? '').not.toMatch(/988|ending your life/);
     }
   });
 
-  it('elevated language alone also keeps stock questions away', async () => {
+  it('elevated language gets 988 once, on that message only', async () => {
     const live = () => ({ turn: turnDeps, live: fixtureProvider(['NONE', 'NONE']) });
     let r = await takeConversationTurn(newSession('u', 's'), 'I have been arguing with my parents a lot.', live());
     r = await takeConversationTurn(r.state, "I don't have any purpose", live());
-    const o = r.output as { text?: string; care?: { text: string } };
+    let o = r.output as { text?: string; care?: { text: string } };
     expect(BANK.has(o.text ?? '')).toBe(false);
     expect(o.care?.text ?? '').toMatch(/988/);
     expect(r.state.heavyAt?.level).toBe('elevated');
+    r = await takeConversationTurn(r.state, 'we argued about my grades again at dinner', live());
+    o = r.output as { text?: string; care?: { text: string } };
+    expect(o.care?.text ?? '').not.toMatch(/988/);
   });
 
-  it('lets the bank back in after enough calmer messages', async () => {
+  it('keeps stock questions away for a while', () => {
     expect(HEAVY_TURNS).toBeGreaterThan(3);
-    expect(HEAVY_CARE.acute).toMatch(/988/);
   });
 });
