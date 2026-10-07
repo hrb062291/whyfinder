@@ -15,6 +15,7 @@
 
 import { PHASE } from '../config/phases.js';
 import { careFor, concernTier, type Care } from '../constraints/concernTier.js';
+import { acuteResponse, crisisContext } from '../constraints/acuteSignal.js';
 import { filterProse } from '../constraints/proseFilter.js';
 import { nextQuestion, recordServed } from '../constraints/questionGate.js';
 import {
@@ -38,6 +39,113 @@ export type ConvState = SessionState & {
   lastGuessAt?: number;
   /** Turns left to stay gentle after something tender was said. */
   tenderLeft?: number;
+  /**
+   * Set when the person says something about ending their life (acute) or close
+   * to it (elevated). `at` is the entry count then. For the next HEAVY_TURNS
+   * messages there are no stock questions and no guesses, only staying with them.
+   */
+  heavyAt?: { at: number; level: 'acute' | 'elevated' };
+  /** The app's own last few lines (replies, questions, answers). Used only so it does not repeat itself. */
+  said?: string[];
+};
+
+// ------------------------------------------------------------------ not repeating itself
+
+/** "I understand about community", "I know", "you said that already". */
+export const ALREADY_KNOW =
+  /\b(?:i (?:already )?(?:understand|know|get it|get that|got it|hear you)|(?:yeah|yes|ok|okay),? i know|you (?:already )?said that|i'?ve (?:already )?(?:heard|tried) that|you keep saying|that'?s what you said)\b/i;
+
+/** Advice the app gives. Re-suggesting one of these right after "I know" is repeating itself. */
+const SUGGESTION_TOPICS = /\b(community|church|small group|pastor|counselor|counselling|counseling|therapist|friend|friends|reach out|talk to someone|988|pray|prayer|journal|walk|exercise|sleep)\b/gi;
+const SUGGEST_VERB = /\b(?:try|trying|consider|find|finding|join|joining|reach out|reaching out|look for|connect with|talk to|talking to|could you|you might|worth|maybe)\b/i;
+
+const words = (t: string): Set<string> =>
+  new Set((t.toLowerCase().match(/[a-z']{4,}/g) ?? []).filter((w) => !REPEAT_STOP.has(w)));
+const REPEAT_STOP = new Set(['that','this','with','what','when','where','which','about','there','their','them','they',
+  'then','than','have','were','been','your','from','just','like','really','very','some','more','much','also','into',
+  'over','only','still','would','could','should','because','while','after','before','being','doing','most','many',
+  'you\'re','it\'s','i\'m','feel','feels','want','wants','things','thing','time','sounds','something']);
+
+/**
+ * True when `candidate` says again what the app already said: most of its words
+ * appear in one earlier line, or it re-suggests advice the person just said they
+ * already understand.
+ */
+export function repeatsItself(candidate: string, prior: string[], latest = ''): boolean {
+  const c = words(candidate);
+  if (c.size >= 4) {
+    for (const p of prior) {
+      const pw = words(p);
+      if (pw.size < 4) continue;
+      let shared = 0;
+      c.forEach((w) => { if (pw.has(w)) shared++; });
+      if (shared / Math.min(c.size, pw.size) >= 0.7) return true;
+    }
+  }
+  // Asking about it ("what makes finding community hard?") is moving on. Telling them again is not.
+  const statements = candidate.split(/(?<=[.!?])\s+/).filter((x) => !x.trim().endsWith('?')).join(' ');
+  if (statements && ALREADY_KNOW.test(latest)) {
+    candidate = statements;
+    const topics = new Set([
+      ...(latest.match(SUGGESTION_TOPICS) ?? []),
+      ...prior.slice(-2).flatMap((p) => p.match(SUGGESTION_TOPICS) ?? []),
+    ].map((t) => t.toLowerCase()));
+    const again = (candidate.match(SUGGESTION_TOPICS) ?? []).map((t) => t.toLowerCase()).filter((t) => topics.has(t));
+    if (again.length > 0 && SUGGEST_VERB.test(candidate)) return true;
+  }
+  return false;
+}
+
+/** The part of each prompt that tells the model what it already said. */
+function priorBlock(prior: string[], latest: string): string {
+  if (prior.length === 0) return '';
+  const list = prior.slice(-6).map((p, i) => `  ${i + 1}. ${p}`).join('\n');
+  const knows = ALREADY_KNOW.test(latest)
+    ? '\n- Their latest message says they already know or understand something you said. Acknowledge that in a few words and move somewhere new: what makes it hard, what they have already tried, or what they would want instead. Do NOT suggest it again.'
+    : '';
+  return `\n\nWhat YOU (WhyFinder) have already said to them, most recent last:\n${list}\n\n- Do not repeat any of that, and do not give the same suggestion again in other words.${knows}`;
+}
+
+/** Other ways to say it, so the same line does not appear turn after turn. All keep 988 in view. */
+const HEAVY_CARE_MORE: Record<'acute' | 'elevated', string[]> = {
+  acute: [
+    'You can call or text 988 at any hour, day or night. I\u2019m still listening.',
+    'Reaching 988, or one person you trust, is the most important next step tonight. I\u2019m here too.',
+  ],
+  elevated: [
+    '988 is there any time, by call or text. I\u2019m still listening.',
+    'A pastor, counselor or friend could help carry this with you, and 988 is there any time.',
+  ],
+};
+
+function heavyCare(level: 'acute' | 'elevated', n = 0): Care {
+  const all = [HEAVY_CARE[level], ...HEAVY_CARE_MORE[level]];
+  return { tier: 'elevated', showResources: false, text: all[((n % all.length) + all.length) % all.length] };
+}
+
+/** When the gentle line was the last thing said, the next one is different. */
+const TENDER_MORE = [
+  'I am still here. Say as much or as little as you want.',
+  'No rush. Whatever you want to say next is fine.',
+];
+function tenderLine(prior: string[]): string {
+  const all = [TENDER_LINE, ...TENDER_MORE];
+  return all.find((t) => !prior.slice(-3).includes(t)) ?? all[0];
+}
+
+/** Keep the app's last few lines, newest last. */
+function remember(prior: string[], ...lines: (string | undefined | null)[]): string[] {
+  const add = lines.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+  return [...prior, ...add].slice(-8);
+}
+
+/** How many messages after a crisis the app keeps stock questions and guesses away. */
+export const HEAVY_TURNS = 6;
+
+/** Fixed wording on each turn after a crisis. AUTHORED, UNREVIEWED: needs clinical review. */
+export const HEAVY_CARE: Record<'acute' | 'elevated', string> = {
+  acute: 'If you are still thinking about ending your life, please call or text 988 now, or tell someone near you. I’m still here too.',
+  elevated: 'If it gets harder, you can call or text 988 any time, or reach a pastor, counselor or friend. I’m still here.',
 };
 
 export interface FaithAnswer {
@@ -81,7 +189,8 @@ function said(entries: { text: string }[]): string {
   return entries.map((e, i) => `  ${i + 1}. ${e.text}`).join('\n');
 }
 
-export function replyPrompt(entries: { text: string }[]): string {
+export function replyPrompt(entries: { text: string }[], prior: string[] = []): string {
+  const latest = entries[entries.length - 1]?.text ?? '';
   return `You are the mentor voice in WhyFinder, a journal and navigator for noticing patterns in one's own life. You are not a therapist, pastor or counselor.
 
 What this person has told you so far, oldest first:
@@ -96,10 +205,11 @@ Write ONE or TWO plain sentences responding to the most recent thing they said.
 - Never write "you are a", "your purpose is", "that's why", "because", or anything about what God wants.
 - Never describe the inner life of anyone but this person.
 - Only if the message is empty of anything concrete, reply with exactly: NONE
-Return only the sentences, no JSON.`;
+Return only the sentences, no JSON.${priorBlock(prior, latest)}`;
 }
 
-export function followUpPrompt(entries: { text: string }[]): string {
+export function followUpPrompt(entries: { text: string }[], prior: string[] = []): string {
+  const latest = entries[entries.length - 1]?.text ?? '';
   // The questions go a little deeper as the conversation does, so it has a direction.
   const real = entries.filter((e) => !isThin(e.text)).length;
   const aim =
@@ -124,10 +234,10 @@ Aim the question at ${aim}
 - Under 140 characters. One question mark. No advice and no explanation.
 - Do not start with "Why". Do not guess how they feel. Do not mention purpose, calling or God unless they did.
 - If their message has nothing concrete to ask about, reply with exactly: NONE
-Return only the question.`;
+Return only the question.${priorBlock(prior, latest)}`;
 }
 
-export function answerPrompt(entries: { text: string }[]): string {
+export function answerPrompt(entries: { text: string }[], prior: string[] = [], question = ''): string {
   return `You are the mentor voice in WhyFinder, a tool for noticing patterns in one's own life. You are not a therapist, pastor or counselor and you do not speak for God.
 
 The person has asked you a question. What they have told you so far:
@@ -153,7 +263,7 @@ Rules. Output that breaks any of these is discarded.
 - Do not use clinical or personality-type labels they did not use first.
 - Avoid "because", "that is why" and "which explains" when linking their feelings to causes. Put two separate observations side by side instead.
 - If they describe anxiety, low mood or distress: acknowledge it plainly in one sentence, never diagnose or name a condition, and give no medical advice. Ordinary, low-risk steps (writing the worry down, a short walk, telling one person) are fine. Say that a doctor or licensed counselor can help, and put one of those in "counsel" alongside a pastor or trusted friend.
-- "questionsToConsider" has two or three questions. "counsel" has one or two entries.`;
+- "questionsToConsider" has two or three questions. "counsel" has one or two entries.${priorBlock(prior, question)}`;
 }
 
 // ------------------------------------------------------------------ detection
@@ -225,12 +335,13 @@ const strings = (v: unknown, max: number): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, max) : [];
 
 export async function generateReply(
-  live: ModelProvider, entries: { text: string }[],
+  live: ModelProvider, entries: { text: string }[], prior: string[] = [],
 ): Promise<string | null> {
   const raw = (await live.complete(
-    entries.map((e) => ({ role: 'user', content: e.text })), replyPrompt(entries),
+    entries.map((e) => ({ role: 'user', content: e.text })), replyPrompt(entries, prior),
   )).trim();
   if (!raw || /^none\b/i.test(raw)) return null;
+  if (repeatsItself(raw, prior, entries[entries.length - 1]?.text ?? '')) return null;
   return filterProse(raw, { maxChars: 400 }).pass ? raw : null;
 }
 
@@ -254,11 +365,12 @@ const contentWords = (t: string): Set<string> =>
  * at least one of their own words. Anything else becomes null and the bank asks.
  */
 export async function generateFollowUp(
-  live: ModelProvider, entries: { text: string }[],
+  live: ModelProvider, entries: { text: string }[], prior: string[] = [],
 ): Promise<string | null> {
   const raw = (await live.complete(
-    entries.map((e) => ({ role: 'user', content: e.text })), followUpPrompt(entries),
+    entries.map((e) => ({ role: 'user', content: e.text })), followUpPrompt(entries, prior),
   )).trim().replace(/^["“]|["”]$/g, '');
+  if (repeatsItself(raw, prior, entries[entries.length - 1]?.text ?? '')) return null;
   if (!raw || /^none\b/i.test(raw)) return null;
   if (raw.length > 180 || (raw.match(/\?/g) ?? []).length !== 1 || !raw.endsWith('?')) return null;
   if (/^why\b/i.test(raw) || /\b(?:purpose|calling)\b/i.test(raw)) return null;
@@ -270,9 +382,9 @@ export async function generateFollowUp(
 }
 
 export async function generateAnswerDetailed(
-  live: ModelProvider, question: string, entries: { text: string }[],
+  live: ModelProvider, question: string, entries: { text: string }[], prior: string[] = [],
 ): Promise<{ answer: FaithAnswer | null; reason: string | null }> {
-  const system = answerPrompt(entries);
+  const system = answerPrompt(entries, prior, question);
   const attempt = async (messages: { role: 'user' | 'assistant'; content: string }[]) => {
     const raw = await live.complete(messages, system);
     const fail = (why: string) => {
@@ -299,6 +411,7 @@ export async function generateAnswerDetailed(
     if (answer.questionsToConsider.length === 0 || answer.counsel.length === 0) {
       return fail('no questions or no counsel');
     }
+    if (repeatsItself(answer.body, prior, question)) return fail('repeats what you already told them');
     return { answer, reason: null as string | null };
   };
 
@@ -364,6 +477,11 @@ export async function takeConversationTurn(
   const now = deps.now ?? new Date();
   const { tier } = concernTier(text);
   const live = deps.live;
+  // Still close to a crisis? Then nothing generic: no bank question, no guess.
+  const heavy = phase >= 2 && Boolean(s.heavyAt) && s.entries.length - (s.heavyAt as { at: number }).at < HEAVY_TURNS;
+  const heavyLevel: 'acute' | 'elevated' | null = heavy ? (s.heavyAt as { level: 'acute' | 'elevated' }).level : null;
+  // What the app itself has said lately, so it does not say it again.
+  const prior = s.said ?? [];
 
   // The running count. Acute language never reaches it: that is takeTurn's path.
   const ev = phase >= 2 && tier !== 'acute'
@@ -380,7 +498,7 @@ export async function takeConversationTurn(
   // "What is the point of you?" gets a plain, fixed answer. No model call.
   if (phase >= 2 && (tier === 'none' || tier === 'mild') && asksAboutApp(text)) {
     const asked = s.currentQuestionId;
-    const hurtLately = [...s.entries, { text }].slice(-6).some((e) => isTender(e.text));
+    const hurtLately = heavy || [...s.entries, { text }].slice(-6).some((e) => isTender(e.text));
     const repeatable = !hurtLately && (!asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked));
     const q = currentQuestion(s);
     return {
@@ -400,7 +518,7 @@ export async function takeConversationTurn(
     let answer: FaithAnswer | null = null;
     let droppedWhy = 'no answer';
     try {
-      const d = await generateAnswerDetailed(live, text, s.entries);
+      const d = await generateAnswerDetailed(live, text, s.entries, prior);
       answer = d.answer;
       if (d.reason) droppedWhy = d.reason;
     } catch (e) {
@@ -417,12 +535,17 @@ export async function takeConversationTurn(
     // question or the opening. After a follow-up, a gentle line is better than
     // repeating "Tell me what has been on your mind lately."
     const asked = s.currentQuestionId;
-    const hurtLately = [...s.entries, { text }].slice(-6).some((e) => isTender(e.text));
+    const hurtLately = heavy || [...s.entries, { text }].slice(-6).some((e) => isTender(e.text));
     const repeatable = !hurtLately && (!asked || asked === 'opening' || QUESTIONS.some((x) => x.id === asked));
     // A real answer already points to people. The stock mild line only stays if the answer failed.
-    const care = ((ev.showCard || answer) && tier === 'mild' ? null : careFor(tier)) ?? undefined;
+    const care = ((ev.showCard || answer) && tier === 'mild' ? null : careFor(tier))
+      ?? (heavyLevel ? heavyCare(heavyLevel, s.entries.length - (s.heavyAt?.at ?? 0)) : undefined);
+    const shown = answer ?? { body: ANSWER_FALLBACK };
     return {
-      state: { ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }) },
+      state: {
+        ...s, support: ev.next, ...(repeatable || paused ? {} : { currentQuestionId: 'followup' }),
+        said: remember(prior, shown.body, ...(answer?.questionsToConsider ?? []), ...(answer?.counsel ?? [])),
+      },
       output: {
         kind: 'question',
         text: paused ? (ev.showCard || !answer ? checkin : AFTER_ANSWER) : repeatable ? q.text : AFTER_ANSWER,
@@ -438,15 +561,15 @@ export async function takeConversationTurn(
   const heard = [...s.entries, { text }];
   const replyP: Promise<string | null> =
     phase >= 2 && live && (tier === 'none' || tier === 'mild')
-      ? generateReply(live, heard).catch(() => null)
+      ? generateReply(live, heard, prior).catch(() => null)
       : Promise.resolve(null);
 
   // A short follow-up about what they just said, every other turn, never when
   // they are struggling, giving a thin answer, or the pause is on.
   // Tenderness lingers: after something heavy, the next two turns stay gentle
   // too, even if the next message ("connected") has no distress words in it.
-  const tenderNow = phase >= 2 && !paused && (tier === 'mild' || isTender(text));
-  const tender = tenderNow || (phase >= 2 && !paused && (s.tenderLeft ?? 0) > 0);
+  const tenderNow = phase >= 2 && !paused && (tier === 'mild' || tier === 'elevated' || isTender(text));
+  const tender = tenderNow || heavy || (phase >= 2 && !paused && (s.tenderLeft ?? 0) > 0);
   const tenderLeft = tenderNow ? 2 : Math.max(0, (s.tenderLeft ?? 0) - 1);
   // Someone who said something hurting in the last few messages is not handed a
   // stock bank question ("Walk me through yesterday"). The follow-up stays on them.
@@ -454,7 +577,7 @@ export async function takeConversationTurn(
   const followP: Promise<string | null> =
     phase >= 2 && live && (tier === 'none' || tier === 'mild') && !ev.showCard && !isThin(text)
       && (paused || tender || recentHurt || (s.followStreak ?? 0) < MAX_FOLLOW_STREAK)
-      ? generateFollowUp(live, heard).catch(() => null)
+      ? generateFollowUp(live, heard, prior).catch(() => null)
       : Promise.resolve(null);
 
   // No guess while the pause is on, after a thin answer, or before two real ones.
@@ -469,7 +592,18 @@ export async function takeConversationTurn(
   let state = { ...r.state, experiments: s.experiments, support: ev.next, tenderLeft } as ConvState;
   let output: ConversationOutput = { ...r.output };
 
-  if (output.kind === 'acute') return { state, output };
+  // Remember the crisis, so the next few turns stay with the person.
+  if (output.kind === 'acute') {
+    // Meet them where they are: grief, home, loneliness. The safety parts never change.
+    const response = acuteResponse(crisisContext([...s.entries.map((e) => e.text), text]));
+    return {
+      state: { ...state, heavyAt: { at: s.entries.length, level: 'acute' }, said: remember(prior, response.namesConcern, response.faith) },
+      output: { kind: 'acute', response },
+    };
+  }
+  if (tier === 'elevated') {
+    state = { ...state, heavyAt: { at: state.entries.length, level: heavyLevel === 'acute' ? 'acute' : 'elevated' } };
+  }
 
   // The support pause. The bank does not advance; the entry is already recorded.
   let pausedFollow: string | null = null;
@@ -540,7 +674,7 @@ export async function takeConversationTurn(
         currentQuestionId: 'tender',
         followStreak: 0,
       };
-      output = { ...output, text: TENDER_LINE, questionId: 'tender' };
+      output = { ...output, text: tenderLine(prior), questionId: 'tender' };
     } else {
       state = { ...state, followStreak: 0 };
     }
@@ -559,6 +693,8 @@ export async function takeConversationTurn(
   if (tier === 'mild' && (output.reply || pausedFollow || (output as { questionId?: string }).questionId === 'followup')) {
     delete output.care;
   }
+  // Close to a crisis, 988 stays in view on every turn.
+  if (heavyLevel && !output.care) output.care = heavyCare(heavyLevel, s.entries.length - (s.heavyAt?.at ?? 0));
 
   // One experiment per session, after the first synthesis is shown, and never
   // to someone the support card has just been shown to.
@@ -569,5 +705,6 @@ export async function takeConversationTurn(
     state = o.state;
     output.experiment = { id: o.record.id, title: o.record.title, source: o.record.source };
   }
+  state = { ...state, said: remember(prior, output.reply, (output as { text?: string }).text) };
   return { state, output };
 }

@@ -29,9 +29,9 @@ The constraints live outside the model adapter, so swapping providers changes no
 ## Try it in two minutes
 
 1. **An ordinary day.** Say what you did this week (for example, "I spent Saturday rewiring a shed with my neighbor"). Keep going for a few messages. Each reply stays with your own words and asks one follow-up. After a few messages you will see a card labelled **"A guess, not a finding"** with the quotes it is based on. Press **Keep this**, **Edit** (say it in your own words) or **That's not it**.
-2. **Open the Journal** (top bar). Your kept guesses, your own words and the passages you looked at are there. Copy or download it as plain text.
+2. **Save something by asking.** After a message, type "add this to my journal" or "this is important to me". Open the **Journal** (top bar): it is under "Things you saved", next to your kept guesses and saved questions. Press **Clear chat**: the conversation goes, the journal stays. Copy or download it as plain text.
 3. **A faith question.** Ask "what does the Bible say about anxiety?" You get a short, hedged answer, questions to sit with, people worth talking to, and the real verse text from the YouVersion API with its version, copyright and a link. Save any question to bring to a pastor or counselor.
-4. **A hard moment.** Say you are anxious and overwhelmed. A support card appears pointing to a counselor or doctor, a pastor or small group, one person who knows you, and 988. The app pauses its questions and says so out loud.
+4. **A hard moment.** Say you are anxious and overwhelmed. A support card appears pointing to a counselor or doctor, a pastor or small group, one person who knows you, and 988. The app pauses its questions and says so out loud. Language about ending one's life, even misspelled ("kill myslef"), gets 988 and real people at once, says plainly that this is beyond what an app can help with, offers a short Christian word that the person is loved and made for community, and shows Psalm 34:18. For the next several messages there are no stock questions and no guesses.
 
 ---
 
@@ -44,7 +44,7 @@ The constraints live outside the model adapter, so swapping providers changes no
 | **You decide what is kept** | Nothing goes into the journal unless you press Keep, or write it yourself. |
 | **Scripture, not just opinions** | Faith questions get a labelled answer ("What the Bible says" vs. "How many Christians read it") with live passages from the YouVersion API. |
 | **Points to people** | Distress leads to a counselor, a pastor, a friend, or 988, never to the app as a substitute. |
-| **Journal side panel** | What I'm noticing, questions to bring to someone, your own words, passages, export. All on your device. |
+| **A journal you come back to** | Kept guesses, things you asked to save ("add this to my journal"), questions to bring to someone, export. It survives closing the browser and clearing the chat. All on your device. |
 | **Honest when it breaks** | If the language model is unreachable, the app tells you and holds back. It never passes off canned text as a real guess. |
 
 ---
@@ -78,9 +78,9 @@ A guarded Gloo AI Studio adapter is built (`src/providers/gloo.ts`) with a retry
 
 ## Privacy and safety
 
-- **No database.** The conversation and journal live in the browser (`localStorage`) on the person's own device. "Clear this device" erases both. The server keeps nothing.
+- **No database.** The conversation and journal live in the browser (`localStorage`) on the person's own device. Both survive closing the browser. "Clear chat" erases the conversation and keeps the journal; "Erase everything on this device" (in the journal) erases both. The server keeps nothing.
 - Each turn sends the conversation text to the server and then to the model provider to generate a reply. The opening screen says that training on what you write is off unless you turn it on yourself.
-- **Crisis language** gets 988 and the crisis resources immediately. Lower-level distress gets a support card and pauses the question flow, and the card says that nothing is reported to anyone.
+- **Crisis language** gets 988 and the crisis resources immediately. It is detected as written and after correcting common typos and slang, and for several messages afterwards the app asks no stock questions and offers no guesses. Lower-level distress gets a support card and pauses the question flow, and the card says that nothing is reported to anyone.
 - **This is an unreviewed prototype.** The wording of the support and crisis messages was written by us and has not been reviewed by a clinician or a pastoral reviewer. The app says so on its first screen ("See what's still open") and lists exactly what is unreviewed.
 
 ### REVIEW_STATE
@@ -89,7 +89,7 @@ A guarded Gloo AI Studio adapter is built (`src/providers/gloo.ts`) with a retry
 |---|---|---|
 | Reviewers | none | clinician + pastoral signed off |
 | Heavy question rows | disabled | live |
-| Crisis copy | borrowed verbatim from 988 / Crisis Text Line | authored, clinician-approved |
+| Crisis copy | resources borrowed verbatim from 988 / Crisis Text Line; the hand-off lines, the Christian word and the check-in line are authored and **unreviewed** | authored, clinician- and pastor-approved |
 | Expiry | 2026-10-09, then refuses to serve | none |
 
 DEMO carries a hard expiry in code. Past it the build stops and says why. Temporary infrastructure without an expiry is how it becomes permanent.

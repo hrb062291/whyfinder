@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { Synthesis } from '../src/types/index.js';
+import { journalRequest } from '../src/engine/journalRequest.js';
 import './journal.css';
 
 type Answer = {
@@ -33,6 +34,7 @@ type Turn =
   | { kind: 'notice'; text: string }
   | { kind: 'welcome'; text: string }
   | { kind: 'you'; text: string }
+  | { kind: 'verse'; verse: { reference: string; text: string; version: string; versionTitle: string; copyright: string; link?: string } }
   | { kind: 'synthesis'; synthesis: Synthesis; quotes: string[] }
   | { kind: 'answer'; answer: Answer }
   | { kind: 'support'; support: Support }
@@ -131,8 +133,10 @@ type JournalItem = {
 };
 /** A question from an answer card that the person saved to take to someone. */
 type SavedQuestion = { text: string; at: number };
-type Journal = { items: JournalItem[]; dropped: string[]; questions: SavedQuestion[] };
-const EMPTY_JOURNAL: Journal = { items: [], dropped: [], questions: [] };
+/** Something the person asked to keep ("add this to my journal"), in their own words. */
+type SavedNote = { id: string; text: string; at: number };
+type Journal = { items: JournalItem[]; dropped: string[]; questions: SavedQuestion[]; notes: SavedNote[] };
+const EMPTY_JOURNAL: Journal = { items: [], dropped: [], questions: [], notes: [] };
 
 function loadJournal(): Journal {
   try {
@@ -143,6 +147,7 @@ function loadJournal(): Journal {
       items: Array.isArray(v.items) ? v.items : [],
       dropped: Array.isArray(v.dropped) ? v.dropped : [],
       questions: Array.isArray(v.questions) ? v.questions : [],
+      notes: Array.isArray(v.notes) ? v.notes : [],
     };
   } catch {
     return EMPTY_JOURNAL;
@@ -230,10 +235,16 @@ export default function Home() {
     if (journalReady.current) saveJournal(journal);
   }, [journal]);
 
-  function startOver() {
-    clearSaved();
+  /** Erase everything on this device: the conversation and the journal. */
+  function eraseAll() {
     clearJournal();
     setJournal(EMPTY_JOURNAL);
+    startOver();
+  }
+
+  /** Clear the conversation only. The journal stays. */
+  function startOver() {
+    clearSaved();
     setRestored(false);
     setState(null);
     setTurns([{ kind: 'disclosure' }]);
@@ -308,12 +319,51 @@ export default function Home() {
     }));
   }
 
+  function removeNote(id: string) {
+    setJournal((j) => ({ ...j, notes: j.notes.filter((n) => n.id !== id) }));
+  }
+
+  /**
+   * "Add this to my journal." Handled here, on this device. It is not sent to
+   * the server or the model, and it does not interrupt the conversation.
+   */
+  function saveToJournal(text: string, content: string | null) {
+    const before = [...turns].reverse().find((t) => t.kind === 'you' && !journalRequest(t.text)) as
+      { kind: 'you'; text: string } | undefined;
+    const keep = (content ?? before?.text ?? '').trim();
+    const clip = (s: string) =>
+      (s.length > 140 ? `${s.slice(0, 140).replace(/\s+\S*$/, '')}…` : s).replace(/[.!?]+$/, '');
+    if (keep) {
+      setJournal((j) => ({
+        ...j,
+        notes: j.notes.some((n) => n.text === keep)
+          ? j.notes
+          : [...j.notes, { id: `n${Date.now()}`, text: keep, at: Date.now() }],
+      }));
+    }
+    setTurns((t) => [
+      ...t,
+      { kind: 'you', text },
+      {
+        kind: 'app',
+        text: keep
+          ? `Saved to your journal: “${clip(keep)}”. It stays there even if you clear this chat. We can keep going whenever you like.`
+          : 'There is nothing to save yet. Tell me something first, or type “add to my journal:” followed by what you want to keep.',
+      },
+    ]);
+  }
+
   async function submit() {
     const text = value.trim();
     if (!text || busy) return;
-    setBusy(true);
     setValue('');
     if (ta.current) ta.current.style.height = 'auto';
+    const req = journalRequest(text);
+    if (req) {
+      saveToJournal(text, req.content);
+      return;
+    }
+    setBusy(true);
     setTurns((t) => [...t, { kind: 'you', text }]);
 
     try {
@@ -331,6 +381,8 @@ export default function Home() {
           ...t,
           { kind: 'app', text: o.response.namesConcern },
           { kind: 'app', text: o.response.offersHuman },
+          ...(o.response.faith ? [{ kind: 'app' as const, text: o.response.faith }] : []),
+          ...(o.response.verse ? [{ kind: 'verse' as const, verse: o.response.verse }] : []),
         ]);
         setSheet('crisis');
       } else {
@@ -371,10 +423,13 @@ export default function Home() {
             Why<span>Finder</span>
           </div>
           {(restored || turns.length > 2) && (
-            <button className="crisis-link" onClick={startOver}>Clear this device</button>
+            <button className="crisis-link" onClick={() => {
+              if (window.confirm('Clear this conversation? Your journal stays on this device.')) startOver();
+            }}>Clear chat</button>
           )}
           <button className="crisis-link j-top" onClick={() => setPanel((o) => !o)} aria-expanded={panel}>
-            Journal{journal.items.length + journal.questions.length > 0 ? ` (${journal.items.length + journal.questions.length})` : ''}
+            Journal{journal.items.length + journal.questions.length + journal.notes.length > 0
+              ? ` (${journal.items.length + journal.questions.length + journal.notes.length})` : ''}
           </button>
           <button className="crisis-link" onClick={() => setSheet('crisis')}>
             Need to talk to someone now
@@ -392,6 +447,16 @@ export default function Home() {
               {t.kind === 'welcome' && <p className="app-text">{t.text}</p>}
               {t.kind === 'notice' && <p className="reflect-note">{t.text}</p>}
               {t.kind === 'you' && <p className="you">{t.text}</p>}
+              {t.kind === 'verse' && (
+                <div className="synthesis">
+                  <div className="syn-kind">What the Bible says</div>
+                  <PassageText reference={t.verse.reference} version={t.verse.version} text={t.verse.text} />
+                  <p className="reflect-note">
+                    {t.verse.versionTitle}. {t.verse.copyright}
+                    {t.verse.link ? <> <a href={t.verse.link} target="_blank" rel="noreferrer">Read on YouVersion</a></> : null}
+                  </p>
+                </div>
+              )}
               {t.kind === 'synthesis' && (
                 <SynthesisCard
                   body={t.synthesis.body}
@@ -469,7 +534,8 @@ export default function Home() {
           onEdit={editKept}
           onRemove={dropGuess}
           onRemoveQuestion={toggleQuestion}
-          onClear={startOver}
+          onRemoveNote={removeNote}
+          onClear={eraseAll}
         />
       )}
 
@@ -508,8 +574,8 @@ function Disclosure({ onGates }: { onGates: () => void }) {
         here is off unless you turn it on yourself in settings.
       </p>
       <p>
-        This conversation is kept on this device only, so you can come back to it. &ldquo;Clear this
-        device&rdquo; at the top erases it.
+        This conversation is kept on this device only, so you can come back to it, even after closing the
+        browser. &ldquo;Clear chat&rdquo; at the top erases it; your journal stays until you erase it there.
       </p>
       <div className="proto">
         <div className="proto-dot" />
@@ -596,10 +662,13 @@ function journalText(journal: Journal, entries: SavedEntry[], verses: Verse[]): 
     out.push(`- ${x.body}  [${x.status === 'edited' ? 'in my words' : 'a guess I kept'}]`);
     x.quotes.forEach((q) => out.push(`    because I said: "${q}"`));
   });
+  out.push('', 'THINGS I SAVED');
+  if (journal.notes.length === 0) out.push('(nothing saved yet)');
+  journal.notes.forEach((n) => out.push(`[${when(n.at)}] ${n.text}`));
   out.push('', 'TO BRING TO SOMEONE');
   if (journal.questions.length === 0) out.push('(nothing saved yet)');
   journal.questions.forEach((q) => out.push(`- ${q.text}`));
-  out.push('', 'IN MY WORDS');
+  out.push('', 'WHAT I SAID IN THIS CONVERSATION');
   if (entries.length === 0) out.push('(nothing yet)');
   entries.forEach((e) => out.push(`[${when(e.createdAt)}] ${e.text}`));
   if (verses.length > 0) {
@@ -624,10 +693,10 @@ function downloadText(text: string) {
  * kept (in the words they approved), what they said, and the passages we looked at.
  * Nothing in it is sent anywhere.
  */
-function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onRemoveQuestion, onClear }: {
+function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onRemoveQuestion, onRemoveNote, onClear }: {
   journal: Journal; entries: SavedEntry[]; verses: Verse[];
   onClose: () => void; onEdit: (id: string, body: string) => void; onRemove: (id: string) => void;
-  onRemoveQuestion: (text: string) => void; onClear: () => void;
+  onRemoveQuestion: (text: string) => void; onRemoveNote: (id: string) => void; onClear: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -686,6 +755,28 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onR
       </section>
 
       <section className="j-section">
+        <h2 className="j-h">Things you saved</h2>
+        {journal.notes.length === 0 ? (
+          <p className="j-empty">
+            Type &ldquo;add this to my journal&rdquo; or &ldquo;this is important to me&rdquo; after something you
+            said, and it will be kept here, even if you clear the chat.
+          </p>
+        ) : (
+          <ul className="j-list">
+            {[...journal.notes].reverse().map((n) => (
+              <li key={n.id}>
+                <span className="j-time">
+                  {new Date(n.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </span>
+                <span>{n.text}</span>
+                <button className="j-link" onClick={() => onRemoveNote(n.id)}>Remove</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="j-section">
         <h2 className="j-h">To bring to someone</h2>
         {journal.questions.length === 0 ? (
           <p className="j-empty">
@@ -705,9 +796,9 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onR
       </section>
 
       <section className="j-section">
-        <h2 className="j-h">In your words</h2>
+        <h2 className="j-h">What you&rsquo;ve said in this chat</h2>
         {said.length === 0 ? (
-          <p className="j-empty">What you write will collect here, newest first.</p>
+          <p className="j-empty">What you write in this chat will collect here, newest first. Clearing the chat clears this part.</p>
         ) : (
           <ul className="j-list">
             {said.map((e) => (
@@ -747,8 +838,8 @@ function JournalPanel({ journal, entries, verses, onClose, onEdit, onRemove, onR
           <button className="btn" onClick={() => downloadText(journalText(journal, entries, uniqueVerses))}>Download</button>
         </div>
         <span className="j-foot-note">Your journal as plain text, to keep or to bring to someone. Nothing is sent anywhere.</span>
-        <button className="j-link" onClick={() => { if (window.confirm('Erase this conversation and your journal from this device?')) onClear(); }}>Clear this device</button>
-        <span className="j-foot-note">Erases the conversation and this journal.</span>
+        <button className="j-link" onClick={() => { if (window.confirm('Erase this conversation and your journal from this device? This cannot be undone.')) onClear(); }}>Erase everything on this device</button>
+        <span className="j-foot-note">Erases the conversation and this journal. To clear only the chat, use &ldquo;Clear chat&rdquo; at the top.</span>
       </div>
     </aside>
   );

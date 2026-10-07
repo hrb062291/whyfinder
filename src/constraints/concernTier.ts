@@ -12,7 +12,7 @@
  * BETA, like the rest of the C-06 path.
  */
 
-import { detectAcuteSignal } from './acuteSignal.js';
+import { detectAcuteSignal, normalizeForSignal } from './acuteSignal.js';
 
 export type ConcernTier = 'none' | 'mild' | 'elevated' | 'acute';
 
@@ -33,6 +33,11 @@ const ELEVATED: RegExp[] = [
   /\b(?:don'?t|do not|can'?t|cannot|no longer) see (?:the |any )?point (?:of|in) (?:going on|living|life|continuing|being here|anything)\b/i,
   /\bno point (?:in )?(?:going on|living|being here|anymore)\b/i,
   /\bwish i (?:wasn'?t|were not|weren'?t) (?:here|alive|born)\b/i,
+  // "I don't have any purpose." First person only: "the meeting had no purpose" is not this.
+  /\bi (?:don'?t|do not|no longer) have (?:a |any )?(?:purpose|reason to (?:live|be here)|meaning)\b/i,
+  /\bi (?:have|got) no (?:purpose|reason to (?:live|be here)|meaning)\b/i,
+  /\bmy life (?:has no |doesn'?t have (?:a |any )?|does not have (?:a |any )?)(?:purpose|meaning|point)\b/i,
+  /\bi'?m (?:a )?(?:burden|worthless) to (?:everyone|everybody|my family)\b/i,
 ];
 
 const MILD: RegExp[] = [
@@ -59,8 +64,10 @@ const LAMENT: RegExp[] = [
   /\bhow long,? (?:o )?lord\b/i,
 ];
 
-export function concernTier(text: string): { tier: ConcernTier; matched?: string } {
-  if (detectAcuteSignal(text).fired) return { tier: 'acute' };
+export function concernTier(raw: string): { tier: ConcernTier; matched?: string } {
+  if (detectAcuteSignal(raw).fired) return { tier: 'acute' };
+  // Typos and slang are read the same way the acute check reads them.
+  const text = normalizeForSignal(raw);
   const lament = LAMENT.some((re) => re.test(text));
   for (const re of ELEVATED) {
     const m = text.match(re);

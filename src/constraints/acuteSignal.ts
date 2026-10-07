@@ -38,7 +38,60 @@ const ACUTE_PATTERNS: RegExp[] = [
   /\bhaven(?:'t| not) (?:eaten|slept|left the house) (?:in|for) (?:days|weeks)\b/i,
   /\bsuicid/i,
   /\bself[- ]harm/i,
+  /\bend(?:ing)? myself\b/i,
+  /\bno reason to (?:live|go on|keep going)\b/i,
+  /\bwish (?:i|that i) (?:was|were) dead\b/i,
+  /\bwant(?:ed)? to end it\b/i,
 ];
+
+// ------------------------------------------------------------------ typos and slang
+//
+// A person in crisis does not proofread. "I want to kill myslef" was missed in a
+// live test and got a stock question back: the most dangerous false negative
+// there is. Each message is checked as written AND after this normalisation.
+
+/** Optimal string alignment distance: edits plus swapped neighbours ("myslef"). */
+function osa(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/**
+ * Words worth correcting, and how far off they may be. "suicide" allows only one
+ * edit, so "subside" (two away) is never read as "suicide".
+ */
+const CANON: { word: string; max: number }[] = [
+  { word: 'myself', max: 2 },
+  { word: 'suicide', max: 1 },
+  { word: 'suicidal', max: 1 },
+  { word: 'killing', max: 1 },
+];
+
+export function normalizeForSignal(text: string): string {
+  const t = text.toLowerCase().replace(/[‘’]/g, "'")
+    .replace(/\bkms\b/g, 'kill myself')
+    .replace(/\bunalive\b/g, 'kill')
+    .replace(/\bwanna\b/g, 'want to')
+    .replace(/\bgonna\b/g, 'going to')
+    .replace(/\bkil+\b/g, 'kill')
+    .replace(/\bmy\s+(?:self|slef|sefl)\b/g, 'myself');
+  return t.replace(/[a-z]+/g, (w) => {
+    if (w.length < 4) return w;
+    for (const c of CANON) {
+      if (w === c.word || w[0] !== c.word[0] || Math.abs(w.length - c.word.length) > c.max) continue;
+      if (osa(w, c.word) <= c.max) return c.word;
+    }
+    return w;
+  });
+}
 
 /**
  * Lament exemptions. Grief in psalm register — the language of Job and the
@@ -67,7 +120,14 @@ export interface AcuteSignalResult {
   lamentExempted: boolean;
 }
 
-export function detectAcuteSignal(text: string): AcuteSignalResult {
+export function detectAcuteSignal(raw: string): AcuteSignalResult {
+  const r = detectOn(raw);
+  if (r.fired) return r;
+  const norm = normalizeForSignal(raw);
+  return norm === raw.toLowerCase() ? r : detectOn(norm);
+}
+
+function detectOn(text: string): AcuteSignalResult {
   const lamentPresent = LAMENT_MARKERS.some((re) => re.test(text));
 
   for (const re of ACUTE_PATTERNS) {
@@ -130,18 +190,94 @@ export const CRISIS_RESOURCES = [
  * "your message has been flagged" — which C-02 bans as copy anyway.
  * C-04: nothing stops, locks or rate-limits. The app stays fully usable.
  */
-export function acuteResponse(): {
+/**
+ * The one verse shown on the crisis path. Fixed, not chosen by a model, and the
+ * text is exactly what the YouVersion API returned for this reference in the
+ * Berean Standard Bible (public domain), so it works with no network at all.
+ */
+export const CRISIS_VERSE = {
+  reference: 'Psalm 34:18',
+  text: 'The Lord is near to the brokenhearted; He saves the contrite in spirit.',
+  version: 'BSB',
+  versionTitle: 'Berean Standard Bible',
+  copyright: 'Public Domain',
+  link: 'https://www.bible.com/versions/3034',
+};
+
+/** Also exactly as YouVersion returned it (BSB). A psalm that prays loneliness out loud. */
+export const LONELY_VERSE = {
+  ...CRISIS_VERSE,
+  reference: 'Psalm 25:16',
+  text: 'Turn to me and be gracious, for I am lonely and afflicted.',
+};
+
+/**
+ * What the person has been talking about. Read from what they said, so the
+ * crisis response can meet them where they are. The safety parts (stop, name
+ * it, 988, a real person, "this is beyond an app") never change.
+ */
+export type CrisisContext = 'grief' | 'family' | 'lonely' | 'general';
+
+const GRIEF = /\b(?:died|dying|passed away|passed on|lost my|losing my|loss of|funeral|grave|death of|since (?:she|he|they|my \w+) (?:died|passed)|miss (?:my|her|him) so)\b/i;
+const FAMILY = /\b(?:parents?|mom|mum|dad|mother|father|stepdad|stepmom|family|brother|sister)\b/i;
+const CONFLICT = /\b(?:argu\w*|fight\w*|fought|yell\w*|scream\w*|angry|mad at|hate|lectur\w*|(?:don'?t|never|won'?t) (?:listen|hear me|understand)|kicked me out)\b/i;
+const LONELY = /\b(?:lone?l(?:y|iness)|alone|isolated|no friends|no one (?:cares|talks|to talk)|nobody (?:cares|talks|to talk)|left out|invisible)\b/i;
+
+export function crisisContext(texts: string[]): CrisisContext {
+  const recent = texts.slice(-6);
+  const all = recent.join(' \n ');
+  if (GRIEF.test(all)) return 'grief';
+  if (recent.some((t) => FAMILY.test(t) && CONFLICT.test(t)) || (FAMILY.test(all) && CONFLICT.test(all))) return 'family';
+  if (LONELY.test(all)) return 'lonely';
+  return 'general';
+}
+
+const STOPPING = 'What you just said matters more than anything we were talking about, so I’m stopping the questions to stay with this.';
+
+const OPENING: Record<CrisisContext, string> = {
+  general: `I’m really glad you told me. ${STOPPING}`,
+  grief: `I’m so sorry about who you have lost, and I’m really glad you told me this. ${STOPPING}`,
+  family: `It sounds like things at home have been really hard, and I’m really glad you told me. ${STOPPING}`,
+  lonely: `Feeling this alone can make everything look darker, and I’m really glad you told me. ${STOPPING}`,
+};
+
+/** Who to reach. At home the conflict may be with a parent, so a parent is not the first name offered. */
+const REACH: Record<CrisisContext, string> = {
+  general: 'a parent, a pastor, a counselor or a friend',
+  grief: 'a family member, a pastor, a counselor or a friend',
+  family: 'a relative you trust, a pastor, a school counselor or a friend',
+  lonely: 'a pastor, a counselor, a relative or anyone you trust, even someone you have not talked to in a while',
+};
+
+const FAITH: Record<CrisisContext, string> = {
+  general:
+    'And please hear this: you are loved, and your life matters. The Christian faith holds that every person is made in the image of God and made for community, so you were never meant to carry this alone.',
+  grief:
+    'Grief this deep can make it feel like there is no way forward. But you are loved, and your life matters, to God and to the people still here with you. Christians have long believed that God draws near to the grieving, and that we are meant to grieve together, not alone.',
+  family:
+    'And please hear this: you are loved, and your life matters, even on the days when home feels like the hardest place to be. The Christian faith holds that every person is made in the image of God, and that there are people beyond this argument who are meant to stand with you.',
+  lonely:
+    'Please hear this: you are loved, and your life matters, even when it feels like no one notices. The Christian faith holds that every person is made in the image of God and made for community, so you were never meant to be this alone. The Psalms are full of people bringing exactly this loneliness to God.',
+};
+
+export function acuteResponse(context: CrisisContext = 'general'): {
   stopsExercise: boolean;
   namesConcern: string;
   resources: typeof CRISIS_RESOURCES;
   offersHuman: string;
+  /** A short word from the Christian faith. AUTHORED, UNREVIEWED: needs pastoral and clinical review. */
+  faith: string;
+  verse: typeof CRISIS_VERSE;
+  context: CrisisContext;
 } {
   return {
     stopsExercise: true,
-    namesConcern:
-      'What you just said sounds heavy, and I want to stay with it rather than carry on with what we were doing.',
+    namesConcern: OPENING[context],
     resources: CRISIS_RESOURCES,
     offersHuman:
-      'This sounds like something worth talking through with another person, not with me. Is there someone — a pastor, a counselor, a friend — you could reach today?',
+      `This is beyond what a conversation with an app can help with, and you deserve a real person right now. Please call or text 988, the Suicide & Crisis Lifeline, or tell someone near you tonight: ${REACH[context]}. If you are in danger right now, call 911.`,
+    faith: FAITH[context],
+    verse: context === 'lonely' ? LONELY_VERSE : CRISIS_VERSE,
+    context,
   };
 }
